@@ -1,0 +1,397 @@
+from __future__ import annotations
+
+import json
+import os
+import platform
+import re
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+from typing import Iterator, TextIO
+
+from huicode.agent_events import AgentEvent, AgentOptions, AgentState, CollectedResponse, ToolBatch
+from huicode.config import LLMConfig
+from huicode.prompts import PromptBundle, PromptContext, build_prompt_bundle, enhance_tool_specs, normalize_cache_usage
+from huicode.providers.base import ConversationMessage, Provider, ToolCall
+from huicode.sse import APIError
+from huicode.tools.base import ToolContext, ToolResult
+from huicode.tools.executor import execute_tool_call
+from huicode.tools.registry import ToolRegistry
+from huicode.tui import render_agent_event
+
+
+MAX_INLINE_TOOL_RESULT_CHARS = 4000
+
+
+def run_agent_turn(
+    provider: Provider,
+    registry: ToolRegistry,
+    context: ToolContext,
+    messages: list[ConversationMessage],
+    user_text: str,
+    config: LLMConfig,
+    output: TextIO | None = None,
+) -> bool:
+    out = output or sys.stdout
+    state = AgentState(messages=messages)
+    ok = True
+    for event in run_agent_loop(
+        provider=provider,
+        registry=registry,
+        context=context,
+        state=state,
+        user_text=user_text,
+        config=config,
+        options=AgentOptions(),
+    ):
+        if event.kind == "thinking" and not config.thinking.show:
+            continue
+        if event.kind == "usage" and not config.show_usage:
+            continue
+        render_agent_event(event, out)
+        if event.kind == "error" or (event.kind == "done" and event.stop_reason in {"cancelled", "error"}):
+            ok = False
+    return ok
+
+
+def run_agent_loop(
+    provider: Provider,
+    registry: ToolRegistry,
+    context: ToolContext,
+    state: AgentState,
+    user_text: str,
+    config: LLMConfig,
+    options: AgentOptions,
+) -> Iterator[AgentEvent]:
+    state.cancel_requested = False
+    state.iterations = 0
+    state.unknown_tool_count = 0
+    empty_response_count = 0
+    state.messages.append(ConversationMessage(role="user", content=_build_user_text(user_text, state, options)))
+
+    while state.iterations < options.max_iterations:
+        state.iterations += 1
+        iteration = state.iterations
+        yield AgentEvent(
+            kind="progress",
+            iteration=iteration,
+            data={"stage": "assistant_turn_start", "mode": options.mode},
+        )
+        try:
+            prompt = build_agent_prompt(context=context, registry=registry, state=state, options=options, iteration=iteration)
+            response = yield from collect_model_response(
+                provider=provider,
+                messages=state.messages,
+                tools=select_tools(registry, options),
+                prompt=prompt,
+                iteration=iteration,
+            )
+        except KeyboardInterrupt:
+            state.cancel_requested = True
+            yield AgentEvent(
+                kind="done",
+                iteration=iteration,
+                stop_reason="cancelled",
+                data={"message": "生成已中断。"},
+            )
+            return
+        except (APIError, RuntimeError, ValueError) as exc:
+            yield AgentEvent(
+                kind="error",
+                iteration=iteration,
+                data={"message": f"请求错误: {exc}"},
+            )
+            yield AgentEvent(
+                kind="done",
+                iteration=iteration,
+                stop_reason="error",
+                data={"message": f"请求错误: {exc}"},
+            )
+            return
+
+        if _is_empty_response(response):
+            empty_response_count += 1
+            if empty_response_count <= options.max_empty_responses:
+                state.messages.append(ConversationMessage(role="user", content=_empty_response_retry_prompt()))
+                continue
+            yield AgentEvent(
+                kind="error",
+                iteration=iteration,
+                data={"message": "模型返回了空回复，已停止本次执行。"},
+            )
+            yield AgentEvent(
+                kind="done",
+                iteration=iteration,
+                stop_reason="error",
+                data={"message": "模型返回了空回复，已停止本次执行。"},
+            )
+            return
+
+        empty_response_count = 0
+        state.messages.append(
+            ConversationMessage(
+                role="assistant",
+                content=response.text,
+                thinking=response.thinking,
+                thinking_signature=response.thinking_signature,
+                tool_calls=response.tool_calls,
+            )
+        )
+
+        if not response.tool_calls:
+            state.unknown_tool_count = 0
+            if options.mode == "plan" and response.text:
+                state.last_plan = response.text
+            yield AgentEvent(kind="done", iteration=iteration, stop_reason="final")
+            return
+
+        outcomes = yield from execute_tool_batches(registry, context, state, response.tool_calls, iteration)
+        if _all_unknown_tool_results(outcomes):
+            state.unknown_tool_count += len(outcomes)
+        else:
+            state.unknown_tool_count = 0
+
+        if state.unknown_tool_count >= options.max_unknown_tools:
+            yield AgentEvent(
+                kind="done",
+                iteration=iteration,
+                stop_reason="unknown_tool_limit",
+                data={"message": "连续请求未知工具，已停止本次执行。"},
+            )
+            return
+
+        if state.cancel_requested:
+            yield AgentEvent(
+                kind="done",
+                iteration=iteration,
+                stop_reason="cancelled",
+                data={"message": "生成已中断。"},
+            )
+            return
+
+    yield AgentEvent(
+        kind="done",
+        iteration=state.iterations,
+        stop_reason="max_iterations",
+        data={"message": f"已达到最大迭代次数 {options.max_iterations}，停止执行。"},
+    )
+
+
+def collect_model_response(
+    provider: Provider,
+    messages: list[ConversationMessage],
+    tools,
+    prompt: PromptBundle | None,
+    iteration: int,
+) -> Iterator[AgentEvent]:
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    thinking_signature_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+    usage: dict[str, object] = {}
+
+    for event in provider.stream_chat(messages, tools=tools, allow_tool_calls=True, prompt=prompt):
+        if event.kind == "text":
+            text_parts.append(event.text)
+            yield AgentEvent(kind="text", text=event.text, iteration=iteration)
+            continue
+        if event.kind == "thinking":
+            if event.text:
+                thinking_parts.append(event.text)
+            if event.thinking_signature:
+                thinking_signature_parts.append(event.thinking_signature)
+            yield AgentEvent(
+                kind="thinking",
+                text=event.text,
+                iteration=iteration,
+                data={"thinking_signature": event.thinking_signature},
+            )
+            continue
+        if event.kind == "usage":
+            normalized_usage = normalize_cache_usage(event.usage)
+            usage.update(normalized_usage)
+            yield AgentEvent(kind="usage", iteration=iteration, data={"usage": dict(normalized_usage)})
+            continue
+        if event.tool_call is not None:
+            tool_calls.append(event.tool_call)
+
+    return CollectedResponse(
+        text="".join(text_parts),
+        thinking="".join(thinking_parts),
+        thinking_signature="".join(thinking_signature_parts),
+        tool_calls=tool_calls,
+        usage=usage,
+    )
+
+
+def select_tools(registry: ToolRegistry, options: AgentOptions):
+    if options.mode == "plan":
+        return enhance_tool_specs(registry.to_specs(options.read_only_tool_names))
+    return enhance_tool_specs(registry.to_specs())
+
+
+def build_agent_prompt(
+    context: ToolContext,
+    registry: ToolRegistry,
+    state: AgentState,
+    options: AgentOptions,
+    iteration: int,
+) -> PromptBundle:
+    selected_tools = select_tools(registry, options)
+    prompt_context = PromptContext(
+        workspace=context.workspace,
+        platform=platform.platform(),
+        shell=_current_shell(),
+        now=datetime.now().astimezone().isoformat(timespec="seconds"),
+        mode=options.mode,
+        iteration=iteration,
+        max_iterations=options.max_iterations,
+        available_tools=tuple(tool.name for tool in selected_tools),
+        read_only_tool_names=tuple(sorted(options.read_only_tool_names)),
+        last_plan=state.last_plan,
+    )
+    return build_prompt_bundle(prompt_context)
+
+
+def _current_shell() -> str:
+    return os.environ.get("SHELL") or os.environ.get("ComSpec") or os.environ.get("COMSPEC") or "unknown"
+
+
+def batch_tool_calls(calls: list[ToolCall], registry: ToolRegistry) -> ToolBatch:
+    parallel_read_calls: list[ToolCall] = []
+    serial_calls: list[ToolCall] = []
+    for call in calls:
+        if registry.is_side_effect(call.name):
+            serial_calls.append(call)
+        else:
+            parallel_read_calls.append(call)
+    return ToolBatch(parallel_read_calls=parallel_read_calls, serial_calls=serial_calls)
+
+
+def execute_tool_batches(
+    registry: ToolRegistry,
+    context: ToolContext,
+    state: AgentState,
+    calls: list[ToolCall],
+    iteration: int,
+) -> Iterator[AgentEvent]:
+    batch = batch_tool_calls(calls, registry)
+    outcomes: list[tuple[ToolCall, ToolResult]] = []
+
+    if batch.parallel_read_calls:
+        for call in batch.parallel_read_calls:
+            yield AgentEvent(kind="tool_call", tool_call=call, iteration=iteration)
+        max_workers = max(1, len(batch.parallel_read_calls))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(execute_tool_call, registry, call, context)
+                for call in batch.parallel_read_calls
+            ]
+            results = [future.result() for future in futures]
+        for call, result in zip(batch.parallel_read_calls, results, strict=False):
+            result = _spill_large_tool_result(context, call, result, iteration)
+            state.messages.append(_tool_message(call, result))
+            outcomes.append((call, result))
+            yield AgentEvent(kind="tool_result", tool_call=call, tool_result=result, iteration=iteration)
+
+    for call in batch.serial_calls:
+        yield AgentEvent(kind="tool_call", tool_call=call, iteration=iteration)
+        result = execute_tool_call(registry, call, context)
+        result = _spill_large_tool_result(context, call, result, iteration)
+        state.messages.append(_tool_message(call, result))
+        outcomes.append((call, result))
+        yield AgentEvent(kind="tool_result", tool_call=call, tool_result=result, iteration=iteration)
+
+    return outcomes
+
+
+def _tool_message(call: ToolCall, result: ToolResult) -> ConversationMessage:
+    return ConversationMessage(
+        role="tool",
+        content=result.summary,
+        tool_call_id=call.id,
+        tool_name=call.name,
+        tool_result=result,
+    )
+
+
+def _spill_large_tool_result(
+    context: ToolContext,
+    call: ToolCall,
+    result: ToolResult,
+    iteration: int,
+) -> ToolResult:
+    serialized = json.dumps(result.to_model_dict(), ensure_ascii=False)
+    if len(serialized) <= MAX_INLINE_TOOL_RESULT_CHARS:
+        return result
+
+    relative_path = Path(".huicode") / "tool-results" / f"turn-{iteration:03d}-{_safe_filename(call.id)}.json"
+    spill_path = context.workspace / relative_path
+    spill_path.parent.mkdir(parents=True, exist_ok=True)
+    spill_path.write_text(serialized, encoding="utf-8")
+
+    compact_data = _compact_tool_data(result.data)
+    compact_data["__spilled__"] = {
+        "path": relative_path.as_posix(),
+        "chars_freed": max(0, len(serialized) - len(json.dumps(compact_data, ensure_ascii=False))),
+    }
+    compact_data["summary"] = result.summary
+    return ToolResult(ok=result.ok, data=compact_data, error=result.error, summary=result.summary)
+
+
+def _compact_tool_data(data: dict[str, object] | None) -> dict[str, object]:
+    if not data:
+        return {}
+    keep = {
+        "path",
+        "command",
+        "returncode",
+        "timed_out",
+        "lines",
+        "chars",
+        "bytes",
+        "count",
+        "pattern",
+    }
+    compact = {key: value for key, value in data.items() if key in keep}
+    omitted = sorted(key for key in data if key not in keep)
+    if omitted:
+        compact["omitted_fields"] = omitted
+    return compact
+
+
+def _safe_filename(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
+    return safe or "tool-result"
+
+
+def _build_user_text(user_text: str, state: AgentState, options: AgentOptions) -> str:
+    if options.mode != "do" or not state.last_plan:
+        return user_text
+    task_text = user_text.strip() or "请根据最近计划继续执行。"
+    return (
+        "以下是最近一次计划，请参考它继续执行，不必原样复述计划。\n"
+        f"{state.last_plan}\n\n"
+        f"当前执行任务：\n{task_text}"
+    )
+
+
+def _is_empty_response(response: CollectedResponse) -> bool:
+    return not response.text and not response.thinking and not response.tool_calls
+
+
+def _empty_response_retry_prompt() -> str:
+    return (
+        "上一轮没有返回任何可显示内容。请不要复述本提示，也不要再次调用工具；"
+        "请直接根据已有工具结果，用中文回答用户最初的问题。"
+    )
+
+
+def _all_unknown_tool_results(outcomes: list[tuple[ToolCall, ToolResult]]) -> bool:
+    if not outcomes:
+        return False
+    return all(
+        not result.ok and result.error is not None and result.error.code == "unknown_tool"
+        for _, result in outcomes
+    )

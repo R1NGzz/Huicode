@@ -1,0 +1,53 @@
+import unittest
+from pathlib import Path
+
+from huicode.prompts import PromptContext, PromptInjectionPolicy, build_prompt_bundle
+
+
+def make_context(iteration: int = 1, mode: str = "chat") -> PromptContext:
+    return PromptContext(
+        workspace=Path("C:/work/project"),
+        platform="Windows",
+        shell="powershell",
+        now="2026-07-04T12:00:00+08:00",
+        mode=mode,  # type: ignore[arg-type]
+        iteration=iteration,
+        max_iterations=8,
+        available_tools=("Read", "Find", "Search"),
+        read_only_tool_names=("Read", "Find", "Search", "Glob"),
+        last_plan="先读 README。",
+    )
+
+
+class PromptBuilderTests(unittest.TestCase):
+    def test_environment_uses_special_tag_and_is_dynamic(self) -> None:
+        bundle = build_prompt_bundle(make_context())
+        self.assertIn('<huicode_context type="environment" scope="turn">', bundle.dynamic_text())
+        self.assertIn("workspace: C:/work/project", bundle.dynamic_text())
+        self.assertNotIn("2026-07-04", bundle.stable_text())
+
+    def test_plan_mode_first_iteration_has_full_instruction(self) -> None:
+        bundle = build_prompt_bundle(make_context(mode="plan", iteration=1))
+        text = bundle.supplemental_text()
+        self.assertIn('<huicode_instruction type="plan_mode" scope="turn">', text)
+        self.assertIn("只能使用读类工具", text)
+
+    def test_execution_mode_compact_between_repeats(self) -> None:
+        bundle = build_prompt_bundle(make_context(mode="do", iteration=2))
+        text = bundle.supplemental_text()
+        self.assertIn('<huicode_instruction type="execution_mode" scope="turn">', text)
+        self.assertIn("最小必要操作", text)
+        self.assertNotIn("最近计划摘要", text)
+
+    def test_every_fourth_iteration_repeats_key_constraints(self) -> None:
+        bundle = build_prompt_bundle(
+            make_context(mode="do", iteration=4),
+            PromptInjectionPolicy(repeat_every=4),
+        )
+        text = bundle.supplemental_text()
+        self.assertIn("编辑前必须先读", text)
+        self.assertIn("最近计划摘要", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
