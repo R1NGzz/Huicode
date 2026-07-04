@@ -26,6 +26,16 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("workspace: C:/work/project", bundle.dynamic_text())
         self.assertNotIn("2026-07-04", bundle.stable_text())
 
+    def test_stable_text_does_not_mix_dynamic_tags(self) -> None:
+        bundle = build_prompt_bundle(make_context())
+        stable_text = bundle.stable_text()
+        dynamic_text = bundle.dynamic_text()
+        self.assertIn("## 身份", stable_text)
+        self.assertIn("## 工具使用", stable_text)
+        self.assertNotIn("<huicode_context", stable_text)
+        self.assertNotIn("<huicode_instruction", stable_text)
+        self.assertNotIn("## 身份", dynamic_text)
+
     def test_plan_mode_first_iteration_has_full_instruction(self) -> None:
         bundle = build_prompt_bundle(make_context(mode="plan", iteration=1))
         text = bundle.supplemental_text()
