@@ -3,8 +3,9 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from huicode.cli import _run_chat
+from huicode.cli import ConsolePermissionConfirmer, _run_chat
 from huicode.config import LLMConfig
+from huicode.permissions.base import PermissionRequest
 from huicode.providers.base import ConversationMessage, StreamEvent, ToolCall
 
 
@@ -158,6 +159,37 @@ class CLITests(unittest.TestCase):
         self.assertIn("permissions mode=default", text)
         self.assertIn("权限模式已切换为 strict", text)
         self.assertIn("permissions mode=strict", text)
+
+    def test_perm_alias_shows_and_switches_mode(self) -> None:
+        provider = FakeProvider()
+        config = LLMConfig("openai", "fake-model", "https://example.test/v1", "secret-api-key")
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=["/perm", "/perm strict", "/perm", "/exit"]), redirect_stdout(output):
+            exit_code = _run_chat(provider, config)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("permissions mode=default", text)
+        self.assertIn("strict", text)
+        self.assertIn("permissions mode=strict", text)
+
+    def test_permission_confirmation_shortcuts_and_empty_default_deny(self) -> None:
+        request = PermissionRequest(
+            call=ToolCall("call_1", "Bash", {"command": "git status"}),
+            target="git status",
+            risk="medium",
+            reason="needs confirmation",
+        )
+        confirmer = ConsolePermissionConfirmer(None)
+
+        with patch("builtins.input", return_value="o") as mocked_input, redirect_stdout(io.StringIO()):
+            once = confirmer.confirm(request)
+        self.assertEqual(once.action, "once")
+        mocked_input.assert_called_once_with("Permission [d/o/s/a, enter=deny]> ")
+
+        with patch("builtins.input", return_value=""), redirect_stdout(io.StringIO()):
+            denied = confirmer.confirm(request)
+        self.assertEqual(denied.action, "deny")
 
     def test_permission_confirmation_can_deny_bash(self) -> None:
         class BashProvider(FakeProvider):

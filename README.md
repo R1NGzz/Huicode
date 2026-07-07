@@ -60,7 +60,9 @@ HuiCode 在工具执行前会经过五层防御：
 
 ```text
 /permissions
+/perm
 /permissions strict
+/perm strict
 /permissions default
 /permissions permissive
 ```
@@ -71,6 +73,8 @@ HuiCode 在工具执行前会经过五层防御：
 - `once`：仅本次放行
 - `session`：本会话同类调用放行
 - `always`：永久写入本地级规则
+
+快捷输入同样可用：`d/o/s/a` 分别对应 `deny/once/session/always`，直接回车默认 `deny`。
 
 规则文件路径：
 
@@ -211,6 +215,7 @@ thinking:
 - `/verbose`：切换 token 用量显示，默认关闭
 - `/last [数量]`：展开最近工具结果，默认 1 条，最大 5 条
 - `/permissions [strict|default|permissive]`：查看或切换权限模式
+- `/perm [strict|default|permissive]`：`/permissions` 的短别名
 
 ## 本阶段暂不包含
 

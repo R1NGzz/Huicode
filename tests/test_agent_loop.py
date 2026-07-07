@@ -285,6 +285,59 @@ class AgentLoopTests(unittest.TestCase):
         self.assertFalse(state.messages[2].tool_result.ok)
         self.assertEqual(state.messages[2].tool_result.error.code, "permission_denied")
 
+    def test_plan_mode_denies_side_effect_tool_before_confirmation_and_continues(self) -> None:
+        class RaisingConfirmer:
+            def confirm(self, request):  # noqa: ANN001
+                raise AssertionError("Plan Mode should deny before permission confirmation")
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            target = workspace / "hello.txt"
+            target.write_text("old", encoding="utf-8")
+            provider = ScriptedProvider(
+                [
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall("call_1", "Bash", {"command": "echo 2 > hello.txt"}),
+                        )
+                    ],
+                    [StreamEvent(kind="text", text="Plan Mode 已拒绝写入。")],
+                ]
+            )
+            state = AgentState()
+
+            events = list(
+                run_agent_loop(
+                    provider=provider,
+                    registry=create_default_registry(workspace),
+                    context=ToolContext(
+                        workspace=workspace,
+                        permissions=PermissionContext(
+                            workspace=workspace,
+                            mode="default",
+                            confirmer=RaisingConfirmer(),
+                        ),
+                    ),
+                    state=state,
+                    user_text="用 bash 写一个数字 2 到 hello.txt",
+                    config=LLMConfig("openai", "fake", "https://example.test", "key"),
+                    options=AgentOptions(mode="plan"),
+                )
+            )
+            file_content = target.read_text(encoding="utf-8")
+
+        self.assertEqual(file_content, "old")
+        self.assertEqual(events[-1].stop_reason, "final")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(events[0].data["mode"], "plan")
+        self.assertEqual(events[0].data["permission_mode"], "default")
+        tool_message = state.messages[2]
+        self.assertEqual(tool_message.role, "tool")
+        self.assertFalse(tool_message.tool_result.ok)
+        self.assertEqual(tool_message.tool_result.error.code, "permission_denied")
+        self.assertIn("Plan Mode", tool_message.tool_result.summary)
+
 
 if __name__ == "__main__":
     unittest.main()

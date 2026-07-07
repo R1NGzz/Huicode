@@ -76,7 +76,11 @@ def run_agent_loop(
         yield AgentEvent(
             kind="progress",
             iteration=iteration,
-            data={"stage": "assistant_turn_start", "mode": options.mode},
+            data={
+                "stage": "assistant_turn_start",
+                "mode": options.mode,
+                "permission_mode": context.permissions.mode if context.permissions else "disabled",
+            },
         )
         try:
             prompt = build_agent_prompt(context=context, registry=registry, state=state, options=options, iteration=iteration)
@@ -146,7 +150,7 @@ def run_agent_loop(
             yield AgentEvent(kind="done", iteration=iteration, stop_reason="final")
             return
 
-        outcomes = yield from execute_tool_batches(registry, context, state, response.tool_calls, iteration)
+        outcomes = yield from execute_tool_batches(registry, context, state, response.tool_calls, iteration, options)
         if _all_unknown_tool_results(outcomes):
             state.unknown_tool_count += len(outcomes)
         else:
@@ -275,7 +279,9 @@ def execute_tool_batches(
     state: AgentState,
     calls: list[ToolCall],
     iteration: int,
+    options: AgentOptions | None = None,
 ) -> Iterator[AgentEvent]:
+    options = options or AgentOptions()
     batch = batch_tool_calls(calls, registry)
     outcomes: list[tuple[ToolCall, ToolResult]] = []
 
@@ -284,12 +290,19 @@ def execute_tool_batches(
             yield AgentEvent(kind="tool_call", tool_call=call, iteration=iteration)
         max_workers = max(1, len(batch.parallel_read_calls))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(execute_tool_call, registry, call, context)
-                for call in batch.parallel_read_calls
-            ]
-            results = [future.result() for future in futures]
+            results: list[ToolResult | None] = [None] * len(batch.parallel_read_calls)
+            futures = []
+            for index, call in enumerate(batch.parallel_read_calls):
+                denied = _plan_mode_denial(registry, call, options)
+                if denied is not None:
+                    results[index] = denied
+                    continue
+                futures.append((index, executor.submit(execute_tool_call, registry, call, context)))
+            for index, future in futures:
+                results[index] = future.result()
         for call, result in zip(batch.parallel_read_calls, results, strict=False):
+            if result is None:
+                result = ToolResult.failure("tool_exception", "工具执行未返回结果", {"tool": call.name})
             result = _spill_large_tool_result(context, call, result, iteration)
             state.messages.append(_tool_message(call, result))
             outcomes.append((call, result))
@@ -297,13 +310,36 @@ def execute_tool_batches(
 
     for call in batch.serial_calls:
         yield AgentEvent(kind="tool_call", tool_call=call, iteration=iteration)
-        result = execute_tool_call(registry, call, context)
+        result = _plan_mode_denial(registry, call, options)
+        if result is None:
+            result = execute_tool_call(registry, call, context)
         result = _spill_large_tool_result(context, call, result, iteration)
         state.messages.append(_tool_message(call, result))
         outcomes.append((call, result))
         yield AgentEvent(kind="tool_result", tool_call=call, tool_result=result, iteration=iteration)
 
     return outcomes
+
+
+def _plan_mode_denial(registry: ToolRegistry, call: ToolCall, options: AgentOptions) -> ToolResult | None:
+    if options.mode != "plan":
+        return None
+    resolved_name = registry.resolve_name(call.name)
+    if resolved_name is None:
+        return None
+    if call.name in options.read_only_tool_names or resolved_name in options.read_only_tool_names:
+        return None
+    return ToolResult.failure(
+        "permission_denied",
+        "Plan Mode 只允许读类工具",
+        {
+            "tool": call.name,
+            "resolved_tool": resolved_name,
+            "mode": options.mode,
+            "allowed_tools": sorted(options.read_only_tool_names),
+        },
+        summary="Plan Mode 只允许读类工具，已拒绝执行",
+    )
 
 
 def _tool_message(call: ToolCall, result: ToolResult) -> ConversationMessage:

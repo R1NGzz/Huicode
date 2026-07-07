@@ -42,6 +42,7 @@ COMMANDS = [
     "/verbose",
     "/last",
     "/permissions",
+    "/perm",
 ]
 
 
@@ -125,16 +126,16 @@ def _run_chat(provider: Provider, config: LLMConfig) -> int:
         if command == "/last" or command.startswith("/last "):
             print(_format_last_tool_results(state, command))
             continue
-        if command == "/permissions":
+        if command in {"/permissions", "/perm"}:
             print(_format_permission_summary(permission_context))
             continue
-        if command.startswith("/permissions "):
+        if command.startswith("/permissions ") or command.startswith("/perm "):
             requested_mode = command.split(maxsplit=1)[1].strip()
             if requested_mode in {"strict", "default", "permissive"}:
                 permission_context.mode = requested_mode  # type: ignore[assignment]
                 print(f"权限模式已切换为 {requested_mode}")
             else:
-                print("用法: /permissions [strict|default|permissive]")
+                print("用法: /permissions [strict|default|permissive] 或 /perm [strict|default|permissive]")
             continue
         if command == "/plan":
             current_mode = "plan"
@@ -203,7 +204,7 @@ class ConsolePermissionConfirmer:
         return PermissionConfirmation(mapping.get(answer, "deny"))  # type: ignore[arg-type]
 
     def _read_permission_input(self) -> str:
-        prompt = "Permission [deny/once/session/always]> "
+        prompt = "Permission [d/o/s/a, enter=deny]> "
         if self.prompt_session is None:
             return input(prompt)
         return self.prompt_session.prompt(prompt)

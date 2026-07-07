@@ -47,6 +47,20 @@ class TUITests(unittest.TestCase):
         self.assertIn("HuiCode> 调用工具...", rendered)
         self.assertIn("✓ Read(README.md)", rendered)
 
+    def test_progress_renders_task_and_permission_mode(self) -> None:
+        output = io.StringIO()
+        render_agent_event(
+            AgentEvent(
+                kind="progress",
+                data={"stage": "assistant_turn_start", "mode": "plan", "permission_mode": "strict"},
+            ),
+            output,
+        )
+
+        rendered = output.getvalue()
+        self.assertIn("mode=plan", rendered)
+        self.assertIn("permission=strict", rendered)
+
     def test_groups_multiple_tool_calls_and_shows_elapsed(self) -> None:
         output = io.StringIO()
         read_call = ToolCall(id="1", name="Read", arguments={"path": "README.md"})
@@ -162,7 +176,11 @@ class TUITests(unittest.TestCase):
 
         self.assertIn("权限确认", text)
         self.assertIn("Bash(git status)", text)
-        self.assertIn("deny / once / session / always", text)
+        self.assertIn("[d]eny", text)
+        self.assertIn("[o]nce", text)
+        self.assertIn("[s]ession", text)
+        self.assertIn("[a]lways", text)
+        self.assertIn("enter=deny", text)
 
 
 if __name__ == "__main__":

@@ -47,7 +47,7 @@ def format_permission_request(request: PermissionRequest) -> str:
             f"  target: {_clip(request.target, 120) if request.target else '-'}",
             f"  risk: {request.risk}",
             f"  reason: {request.reason}",
-            "  choose: deny / once / session / always",
+            "  choose: [d]eny / [o]nce / [s]ession / [a]lways, enter=deny",
         ]
     )
 
@@ -90,7 +90,9 @@ def render_agent_event(event: AgentEvent, output: TextIO) -> None:
     if event.kind == "progress" and event.data.get("stage") == "assistant_turn_start":
         _flush_markdown_buffer(output, state)
         _close_inline_state(output, state)
-        print("HuiCode> 思考中...", flush=True, file=output)
+        mode = event.data.get("mode", "chat")
+        permission_mode = event.data.get("permission_mode", "disabled")
+        print(f"HuiCode> 思考中... mode={mode} permission={permission_mode}", flush=True, file=output)
         state["turn_started_at"] = time.perf_counter()
         state["thinking_active"] = True
         state["answer_started"] = False
