@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from huicode.providers.base import ToolSpec
+
+if TYPE_CHECKING:
+    from huicode.permissions import PermissionContext
 
 
 @dataclass(frozen=True)
@@ -12,6 +15,7 @@ class ToolContext:
     workspace: Path
     timeout_seconds: int = 10
     max_output_chars: int = 6000
+    permissions: "PermissionContext | None" = None
 
 
 @dataclass(frozen=True)
@@ -73,8 +77,6 @@ class Tool(Protocol):
 
 
 def safe_join_workspace(workspace: Path, path: str | Path) -> Path:
-    root = workspace.resolve()
-    target = (root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
-    if target != root and root not in target.parents:
-        raise ValueError(f"路径超出工作目录: {path}")
-    return target
+    from huicode.permissions.sandbox import resolve_workspace_path
+
+    return resolve_workspace_path(workspace, path)

@@ -5,6 +5,7 @@ from pathlib import Path
 from huicode.agent import run_agent_loop
 from huicode.agent_events import AgentOptions, AgentState
 from huicode.config import LLMConfig
+from huicode.permissions import PermissionContext
 from huicode.providers.base import ConversationMessage, StreamEvent, ToolCall
 from huicode.tools.base import ToolContext
 from huicode.tools.registry import create_default_registry
@@ -251,6 +252,38 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(events[-2].kind, "error")
         self.assertEqual(events[-1].stop_reason, "error")
         self.assertIn("空回复", events[-2].data["message"])
+
+
+    def test_permission_denial_backfills_history_and_loop_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            provider = ScriptedProvider(
+                [
+                    [StreamEvent(kind="tool_call", tool_call=ToolCall("call_1", "Bash", {"command": "git reset --hard"}))],
+                    [StreamEvent(kind="text", text="已改用安全说明。")],
+                ]
+            )
+            state = AgentState()
+
+            events = list(
+                run_agent_loop(
+                    provider=provider,
+                    registry=create_default_registry(workspace),
+                    context=ToolContext(
+                        workspace=workspace,
+                        permissions=PermissionContext(workspace=workspace, mode="permissive"),
+                    ),
+                    state=state,
+                    user_text="执行危险命令",
+                    config=LLMConfig("openai", "fake", "https://example.test", "key"),
+                    options=AgentOptions(),
+                )
+            )
+
+        self.assertEqual(events[-1].stop_reason, "final")
+        self.assertEqual(state.messages[2].role, "tool")
+        self.assertFalse(state.messages[2].tool_result.ok)
+        self.assertEqual(state.messages[2].tool_result.error.code, "permission_denied")
 
 
 if __name__ == "__main__":

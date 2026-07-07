@@ -5,6 +5,7 @@ import time
 from typing import Any, TextIO
 
 from huicode.agent_events import AgentEvent
+from huicode.permissions.base import PermissionRequest
 from huicode.providers.base import ToolCall
 from huicode.tools.base import ToolResult
 
@@ -36,6 +37,19 @@ def format_tool_result_line(
     if elapsed_seconds is not None:
         summary = f"{summary} ({_format_elapsed(elapsed_seconds)})"
     return f"  {status} {summary}"
+
+
+def format_permission_request(request: PermissionRequest) -> str:
+    return "\n".join(
+        [
+            "HuiCode> 权限确认",
+            f"  tool: {request.call.name}({_summarize_args(request.call.arguments)})",
+            f"  target: {_clip(request.target, 120) if request.target else '-'}",
+            f"  risk: {request.risk}",
+            f"  reason: {request.reason}",
+            "  choose: deny / once / session / always",
+        ]
+    )
 
 
 def _summarize_args(args: dict[str, object]) -> str:

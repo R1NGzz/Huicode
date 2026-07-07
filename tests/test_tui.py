@@ -2,9 +2,10 @@ import io
 import unittest
 
 from huicode.agent_events import AgentEvent
+from huicode.permissions.base import PermissionRequest
 from huicode.providers.base import ToolCall
 from huicode.tools.base import ToolResult
-from huicode.tui import format_tool_call_line, format_tool_result_line, render_agent_event
+from huicode.tui import format_permission_request, format_tool_call_line, format_tool_result_line, render_agent_event
 
 
 class TUITests(unittest.TestCase):
@@ -148,6 +149,20 @@ class TUITests(unittest.TestCase):
         self.assertIn("cache_creation_input_tokens=2", rendered)
         self.assertIn("cache_read_input_tokens=5", rendered)
         self.assertIn("cached_tokens=7", rendered)
+
+    def test_permission_request_format(self) -> None:
+        text = format_permission_request(
+            PermissionRequest(
+                call=ToolCall("1", "Bash", {"command": "git status"}),
+                target="git status",
+                risk="medium",
+                reason="默认模式需要确认",
+            )
+        )
+
+        self.assertIn("权限确认", text)
+        self.assertIn("Bash(git status)", text)
+        self.assertIn("deny / once / session / always", text)
 
 
 if __name__ == "__main__":

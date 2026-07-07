@@ -137,7 +137,7 @@ class CLITests(unittest.TestCase):
         provider = BashProvider()
         config = LLMConfig("openai", "fake-model", "https://example.test/v1", "secret-api-key")
         output = io.StringIO()
-        with patch("builtins.input", side_effect=["运行命令", "/last", "/exit"]), redirect_stdout(output):
+        with patch("builtins.input", side_effect=["运行命令", "once", "/last", "/exit"]), redirect_stdout(output):
             exit_code = _run_chat(provider, config)
 
         self.assertEqual(exit_code, 0)
@@ -145,6 +145,44 @@ class CLITests(unittest.TestCase):
         self.assertIn("command:", text)
         self.assertIn("stdout:", text)
         self.assertIn("expanded-output", text)
+
+    def test_permissions_command_shows_and_switches_mode(self) -> None:
+        provider = FakeProvider()
+        config = LLMConfig("openai", "fake-model", "https://example.test/v1", "secret-api-key")
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=["/permissions", "/permissions strict", "/permissions", "/exit"]), redirect_stdout(output):
+            exit_code = _run_chat(provider, config)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("permissions mode=default", text)
+        self.assertIn("权限模式已切换为 strict", text)
+        self.assertIn("permissions mode=strict", text)
+
+    def test_permission_confirmation_can_deny_bash(self) -> None:
+        class BashProvider(FakeProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.turn = 0
+
+            def stream_chat(self, messages: list[ConversationMessage], tools=None, allow_tool_calls=True, prompt=None):
+                self.calls.append(list(messages))
+                self.turn += 1
+                if self.turn == 1:
+                    yield StreamEvent(kind="tool_call", tool_call=ToolCall("call_1", "Bash", {"command": "git status"}))
+                else:
+                    yield StreamEvent(kind="text", text="已调整。")
+
+        provider = BashProvider()
+        config = LLMConfig("openai", "fake-model", "https://example.test/v1", "secret-api-key")
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=["运行 git", "deny", "/exit"]), redirect_stdout(output):
+            exit_code = _run_chat(provider, config)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("权限确认", text)
+        self.assertIn("用户拒绝本次工具调用", text)
 
 
 if __name__ == "__main__":

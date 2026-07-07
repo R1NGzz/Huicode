@@ -9,11 +9,18 @@ from pathlib import Path
 from huicode.agent import run_agent_loop
 from huicode.agent_events import AgentMode, AgentOptions, AgentState
 from huicode.config import ConfigError, LLMConfig, load_config
+from huicode.permissions import (
+    PermissionConfigError,
+    PermissionConfirmation,
+    PermissionContext,
+    load_permission_config,
+    permission_config_paths,
+)
 from huicode.provider_factory import create_provider
 from huicode.providers.base import Provider
 from huicode.tools.base import ToolContext
 from huicode.tools.registry import create_default_registry
-from huicode.tui import render_agent_event
+from huicode.tui import format_permission_request, render_agent_event
 
 try:
     from prompt_toolkit import PromptSession
@@ -34,6 +41,7 @@ COMMANDS = [
     "/do",
     "/verbose",
     "/last",
+    "/permissions",
 ]
 
 
@@ -60,10 +68,24 @@ def main(argv: list[str] | None = None) -> int:
 def _run_chat(provider: Provider, config: LLMConfig) -> int:
     workspace = Path.cwd()
     registry = create_default_registry(workspace)
-    tool_context = ToolContext(workspace=workspace)
+    try:
+        permission_paths = permission_config_paths(workspace)
+        permission_config = load_permission_config(permission_paths)
+    except PermissionConfigError as exc:
+        print(f"权限配置错误: {exc}")
+        return 2
+
+    prompt_session = _create_prompt_session()
+    permission_context = PermissionContext(
+        workspace=workspace,
+        mode=permission_config.mode,
+        rules=list(permission_config.rules),
+        persistent_path=permission_paths.local,
+        confirmer=ConsolePermissionConfirmer(prompt_session),
+    )
+    tool_context = ToolContext(workspace=workspace, permissions=permission_context)
     state = AgentState()
     current_mode: AgentMode = "chat"
-    prompt_session = _create_prompt_session()
     show_usage = config.show_usage
     print(f"HuiCode 已连接: {provider.name}:{provider.model}")
     print("输入 /exit 退出，/clear 清空会话记忆，/plan 进入计划模式，/do 执行最近计划，/last 展开最近工具结果。")
@@ -102,6 +124,17 @@ def _run_chat(provider: Provider, config: LLMConfig) -> int:
             continue
         if command == "/last" or command.startswith("/last "):
             print(_format_last_tool_results(state, command))
+            continue
+        if command == "/permissions":
+            print(_format_permission_summary(permission_context))
+            continue
+        if command.startswith("/permissions "):
+            requested_mode = command.split(maxsplit=1)[1].strip()
+            if requested_mode in {"strict", "default", "permissive"}:
+                permission_context.mode = requested_mode  # type: ignore[assignment]
+                print(f"权限模式已切换为 {requested_mode}")
+            else:
+                print("用法: /permissions [strict|default|permissive]")
             continue
         if command == "/plan":
             current_mode = "plan"
@@ -146,6 +179,36 @@ def _read_user_input(prompt_session) -> str:
     return prompt_session.prompt("\nYou> ")
 
 
+class ConsolePermissionConfirmer:
+    def __init__(self, prompt_session) -> None:
+        self.prompt_session = prompt_session
+
+    def confirm(self, request) -> PermissionConfirmation:
+        print(format_permission_request(request))
+        answer = self._read_permission_input().strip().lower()
+        mapping = {
+            "d": "deny",
+            "deny": "deny",
+            "n": "deny",
+            "no": "deny",
+            "o": "once",
+            "once": "once",
+            "s": "session",
+            "session": "session",
+            "a": "always",
+            "always": "always",
+            "y": "once",
+            "yes": "once",
+        }
+        return PermissionConfirmation(mapping.get(answer, "deny"))  # type: ignore[arg-type]
+
+    def _read_permission_input(self) -> str:
+        prompt = "Permission [deny/once/session/always]> "
+        if self.prompt_session is None:
+            return input(prompt)
+        return self.prompt_session.prompt(prompt)
+
+
 def _format_config_summary(provider: Provider, config: LLMConfig, show_usage: bool | None = None) -> str:
     summary = f"protocol={provider.name} model={provider.model} base_url={config.base_url}"
     if config.headers:
@@ -153,6 +216,14 @@ def _format_config_summary(provider: Provider, config: LLMConfig, show_usage: bo
     if show_usage is not None:
         summary += f" show_usage={str(show_usage).lower()}"
     return summary
+
+
+def _format_permission_summary(context: PermissionContext) -> str:
+    sources: dict[str, int] = {}
+    for rule in context.session_rules + context.rules:
+        sources[rule.source] = sources.get(rule.source, 0) + 1
+    source_text = ", ".join(f"{source}={count}" for source, count in sorted(sources.items())) or "none"
+    return f"permissions mode={context.mode} rules={len(context.session_rules) + len(context.rules)} sources={source_text}"
 
 
 def _format_last_tool_results(state: AgentState, command: str) -> str:

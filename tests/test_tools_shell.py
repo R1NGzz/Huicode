@@ -4,7 +4,11 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+from huicode.permissions import PermissionContext
+from huicode.providers.base import ToolCall
 from huicode.tools.base import ToolContext
+from huicode.tools.executor import execute_tool_call
+from huicode.tools.registry import create_default_registry
 from huicode.tools.shell import RunCommandTool
 
 
@@ -48,6 +52,19 @@ class ShellToolTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertIn("dir /a", result.data["command"])
+
+    def test_blacklisted_command_is_denied_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            result = execute_tool_call(
+                create_default_registry(workspace),
+                ToolCall("call_1", "Bash", {"command": "git reset --hard"}),
+                ToolContext(workspace=workspace, permissions=PermissionContext(workspace=workspace, mode="permissive")),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error.code, "permission_denied")
+        self.assertEqual(result.error.details["source"], "blacklist")
 
 
 if __name__ == "__main__":

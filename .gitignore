@@ -6,5 +6,6 @@ __pycache__/
 huicode.egg-info/
 .huicode/
 huicode.yaml
+.huicode-permissions.local.yaml
 
 *.log
