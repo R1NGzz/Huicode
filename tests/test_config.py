@@ -163,6 +163,45 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "context.single_tool_result_tokens"):
                 load_config(path)
 
+    def test_rejects_context_thresholds_that_exceed_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "\n".join(
+                    [
+                        "protocol: openai",
+                        "model: test",
+                        "base_url: http://example.test",
+                        "api_key: key",
+                        "context:",
+                        "  window_tokens: 5000",
+                        "  auto_margin_tokens: 13000",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "context.auto_margin_tokens"):
+                load_config(path)
+
+            path.write_text(
+                "\n".join(
+                    [
+                        "protocol: openai",
+                        "model: test",
+                        "base_url: http://example.test",
+                        "api_key: key",
+                        "context:",
+                        "  window_tokens: 5000",
+                        "  auto_margin_tokens: 1000",
+                        "  recent_keep_tokens: 10000",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "context.recent_keep_tokens"):
+                load_config(path)
+
     def test_loads_inline_mcp_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "huicode.yaml"

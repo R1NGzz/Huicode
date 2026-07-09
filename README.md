@@ -128,6 +128,7 @@ HuiCode 会在每次请求模型前管理上下文预算，尽量在不改写用
 
 - 优先锚定上一次 API usage 的 `input_tokens` 或 `prompt_tokens`
 - 对后续增量按字符数近似估算
+- `auto_margin_tokens`、`manual_margin_tokens` 和 `recent_keep_tokens` 必须小于 `window_tokens`；否则自动压缩触发线会失效。
 
 手动命令：
 

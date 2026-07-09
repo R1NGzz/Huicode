@@ -79,6 +79,38 @@ def load_config(path: str | Path) -> LLMConfig:
     if not isinstance(mcp_raw, dict):
         raise ConfigError("配置字段 mcp 必须是 YAML 映射")
 
+    context = ContextConfig(
+        enabled=_as_bool(context_raw.get("enabled", True), "context.enabled"),
+        window_tokens=_as_int(context_raw.get("window_tokens", 128000), "context.window_tokens"),
+        auto_margin_tokens=_as_int(context_raw.get("auto_margin_tokens", 13000), "context.auto_margin_tokens"),
+        manual_margin_tokens=_as_int(
+            context_raw.get("manual_margin_tokens", 3000),
+            "context.manual_margin_tokens",
+        ),
+        recent_keep_tokens=_as_int(
+            context_raw.get("recent_keep_tokens", 10000),
+            "context.recent_keep_tokens",
+        ),
+        min_recent_messages=_as_int(
+            context_raw.get("min_recent_messages", 5),
+            "context.min_recent_messages",
+        ),
+        single_tool_result_tokens=_as_int(
+            context_raw.get("single_tool_result_tokens", 1000),
+            "context.single_tool_result_tokens",
+        ),
+        tool_result_group_tokens=_as_int(
+            context_raw.get("tool_result_group_tokens", 6000),
+            "context.tool_result_group_tokens",
+        ),
+        preview_chars=_as_int(context_raw.get("preview_chars", 1200), "context.preview_chars"),
+        max_summary_failures=_as_int(
+            context_raw.get("max_summary_failures", 3),
+            "context.max_summary_failures",
+        ),
+    )
+    _validate_context_config(context)
+
     return LLMConfig(
         protocol=protocol,
         model=str(values["model"]).strip(),
@@ -94,36 +126,7 @@ def load_config(path: str | Path) -> LLMConfig:
             budget_tokens=_as_int(thinking_raw.get("budget_tokens", 1024), "thinking.budget_tokens"),
             show=_as_bool(thinking_raw.get("show", False), "thinking.show"),
         ),
-        context=ContextConfig(
-            enabled=_as_bool(context_raw.get("enabled", True), "context.enabled"),
-            window_tokens=_as_int(context_raw.get("window_tokens", 128000), "context.window_tokens"),
-            auto_margin_tokens=_as_int(context_raw.get("auto_margin_tokens", 13000), "context.auto_margin_tokens"),
-            manual_margin_tokens=_as_int(
-                context_raw.get("manual_margin_tokens", 3000),
-                "context.manual_margin_tokens",
-            ),
-            recent_keep_tokens=_as_int(
-                context_raw.get("recent_keep_tokens", 10000),
-                "context.recent_keep_tokens",
-            ),
-            min_recent_messages=_as_int(
-                context_raw.get("min_recent_messages", 5),
-                "context.min_recent_messages",
-            ),
-            single_tool_result_tokens=_as_int(
-                context_raw.get("single_tool_result_tokens", 1000),
-                "context.single_tool_result_tokens",
-            ),
-            tool_result_group_tokens=_as_int(
-                context_raw.get("tool_result_group_tokens", 6000),
-                "context.tool_result_group_tokens",
-            ),
-            preview_chars=_as_int(context_raw.get("preview_chars", 1200), "context.preview_chars"),
-            max_summary_failures=_as_int(
-                context_raw.get("max_summary_failures", 3),
-                "context.max_summary_failures",
-            ),
-        ),
+        context=context,
     )
 
 
@@ -301,3 +304,12 @@ def _as_string_map(value: dict[str, Any], field_name: str) -> dict[str, str]:
             raise ConfigError(f"配置字段 {field_name}.{name} 不能为空")
         result[name] = str(raw_value).strip()
     return result
+
+
+def _validate_context_config(context: ContextConfig) -> None:
+    if context.auto_margin_tokens >= context.window_tokens:
+        raise ConfigError("配置字段 context.auto_margin_tokens 必须小于 context.window_tokens")
+    if context.manual_margin_tokens >= context.window_tokens:
+        raise ConfigError("配置字段 context.manual_margin_tokens 必须小于 context.window_tokens")
+    if context.recent_keep_tokens >= context.window_tokens:
+        raise ConfigError("配置字段 context.recent_keep_tokens 必须小于 context.window_tokens")
