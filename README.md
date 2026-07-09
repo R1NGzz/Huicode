@@ -19,6 +19,7 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - prompt_toolkit 交互输入增强
 - 结构化系统提示与缓存 usage 可观测
 - 五层权限系统
+- MCP 客户端工具接入
 
 ## 工具系统
 
@@ -39,6 +40,61 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 ```
 
 当模型一次返回多个工具调用时，读类工具会优先并发执行，副作用工具会串行执行。工具结果会回灌到对话历史里，模型可据此继续下一轮。
+
+## MCP 客户端
+
+HuiCode 启动时会读取 MCP 配置，初始化外部 MCP Server，并把远端工具包装成普通 HuiCode 工具注册到工具中心。模型使用时不需要区分本地工具和 MCP 工具。
+
+MCP 配置文件分两层：
+
+```text
+用户级：~/.huicode/mcp.yaml
+项目级：<workspace>/.huicode-mcp.yaml
+```
+
+两层配置都使用顶层 `mcp` 映射。每个 key 是 server 名称；同名 server 由项目级覆盖用户级，不同名 server 会合并。`env` 和 `headers` 的值支持 `${VAR}` 环境变量展开，变量未定义会作为配置错误处理。`/config` 只显示 server 和工具数量，不会打印 env 或 header 的具体值。
+
+stdio server 示例：
+
+```yaml
+mcp:
+  local_echo:
+    type: stdio
+    command: python
+    args:
+      - ./scripts/mcp_echo_server.py
+    env:
+      ECHO_PREFIX: ${ECHO_PREFIX}
+```
+
+HTTP server 示例：
+
+```yaml
+mcp:
+  remote_search:
+    type: http
+    url: ${MCP_URL}
+    headers:
+      Authorization: Bearer ${MCP_TOKEN}
+```
+
+远端工具会以稳定公开名称注册：
+
+```text
+mcp__<server>__<tool>
+```
+
+例如 `local_echo` server 暴露的 `echo` 工具会注册为 `mcp__local_echo__echo`。调用时 HuiCode 仍会把 MCP 原始工具名回传给远端 server。
+
+当前 MCP 客户端支持：
+
+- stdio 子进程传输
+- Streamable HTTP 的 JSON-RPC POST
+- 初始化握手、`tools/list`、`tools/call`
+- `MCP-Session-Id` 保存和复用
+- 单个 server 失败隔离，不影响其他 server 和本地工具
+
+本阶段暂不支持 MCP resources、prompts、sampling、server 健康检查、自动重连，也不把 MCP 工具标记为只读能力。因此 Plan Mode 下 MCP 工具默认会被拒绝，后续章节再补细粒度安全声明。
 
 ## 权限系统
 
@@ -221,7 +277,6 @@ thinking:
 
 - 项目指令文件加载
 - 自动记忆
-- 真实 MCP 接入
 - 自动化评估
 - 网络请求限制
 - CPU、内存、磁盘、进程数等资源配额

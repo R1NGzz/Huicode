@@ -9,6 +9,7 @@ from huicode.permissions import PermissionContext
 from huicode.providers.base import ConversationMessage, StreamEvent, ToolCall
 from huicode.tools.base import ToolContext
 from huicode.tools.registry import create_default_registry
+from huicode.mcp.tools import MCPToolAdapter
 
 
 class ScriptedProvider:
@@ -32,6 +33,15 @@ class ScriptedProvider:
         if isinstance(turn, Exception):
             raise turn
         yield from turn
+
+
+class FakeMCPSession:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def call_tool(self, name, arguments):  # noqa: ANN001
+        self.calls.append((name, arguments))
+        return {"content": [{"type": "text", "text": f"mcp:{arguments.get('text', '')}"}]}
 
 
 class AgentLoopTests(unittest.TestCase):
@@ -337,6 +347,87 @@ class AgentLoopTests(unittest.TestCase):
         self.assertFalse(tool_message.tool_result.ok)
         self.assertEqual(tool_message.tool_result.error.code, "permission_denied")
         self.assertIn("Plan Mode", tool_message.tool_result.summary)
+
+    def test_mcp_tool_result_backfills_history_and_loop_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            session = FakeMCPSession()
+            registry = create_default_registry(workspace)
+            registry.register(
+                MCPToolAdapter(
+                    server_name="fake",
+                    remote_name="echo",
+                    name="mcp__fake__echo",
+                    description="Echo",
+                    parameters={"type": "object"},
+                    session=session,  # type: ignore[arg-type]
+                )
+            )
+            provider = ScriptedProvider(
+                [
+                    [StreamEvent(kind="tool_call", tool_call=ToolCall("call_1", "mcp__fake__echo", {"text": "hi"}))],
+                    [StreamEvent(kind="text", text="done")],
+                ]
+            )
+            state = AgentState()
+
+            events = list(
+                run_agent_loop(
+                    provider=provider,
+                    registry=registry,
+                    context=ToolContext(workspace=workspace),
+                    state=state,
+                    user_text="call mcp",
+                    config=LLMConfig("openai", "fake", "https://example.test", "key"),
+                    options=AgentOptions(),
+                )
+            )
+
+        self.assertEqual(events[-1].stop_reason, "final")
+        self.assertEqual(session.calls, [("echo", {"text": "hi"})])
+        self.assertEqual(state.messages[2].role, "tool")
+        self.assertTrue(state.messages[2].tool_result.ok)
+        self.assertIn("mcp:hi", state.messages[2].tool_result.summary)
+        self.assertEqual(provider.calls[1]["messages"][2].role, "tool")
+
+    def test_plan_mode_denies_mcp_tool_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            session = FakeMCPSession()
+            registry = create_default_registry(workspace)
+            registry.register(
+                MCPToolAdapter(
+                    server_name="fake",
+                    remote_name="echo",
+                    name="mcp__fake__echo",
+                    description="Echo",
+                    parameters={"type": "object"},
+                    session=session,  # type: ignore[arg-type]
+                )
+            )
+            provider = ScriptedProvider(
+                [
+                    [StreamEvent(kind="tool_call", tool_call=ToolCall("call_1", "mcp__fake__echo", {"text": "hi"}))],
+                    [StreamEvent(kind="text", text="denied")],
+                ]
+            )
+            state = AgentState()
+
+            list(
+                run_agent_loop(
+                    provider=provider,
+                    registry=registry,
+                    context=ToolContext(workspace=workspace),
+                    state=state,
+                    user_text="call mcp",
+                    config=LLMConfig("openai", "fake", "https://example.test", "key"),
+                    options=AgentOptions(mode="plan"),
+                )
+            )
+
+        self.assertEqual(session.calls, [])
+        self.assertFalse(state.messages[2].tool_result.ok)
+        self.assertEqual(state.messages[2].tool_result.error.code, "permission_denied")
 
 
 if __name__ == "__main__":

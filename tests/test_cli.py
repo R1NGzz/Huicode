@@ -1,6 +1,9 @@
 import io
+import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from huicode.cli import ConsolePermissionConfirmer, _run_chat
@@ -19,6 +22,44 @@ class FakeProvider:
     def stream_chat(self, messages: list[ConversationMessage], tools=None, allow_tool_calls=True, prompt=None):
         self.calls.append(list(messages))
         yield StreamEvent(kind="text", text=f"第{len(self.calls)}次回复")
+
+
+class FakeMCPTransport:
+    instances = []
+
+    def __init__(self, server_name: str) -> None:
+        self.server_name = server_name
+        self.closed = False
+        self.__class__.instances.append(self)
+
+    def start(self) -> None:
+        return None
+
+    def request(self, message, timeout_seconds):  # noqa: ANN001
+        method = message["method"]
+        if method == "initialize":
+            return {"jsonrpc": "2.0", "id": message["id"], "result": {"serverInfo": {"name": self.server_name}}}
+        if method == "tools/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}},
+                    ]
+                },
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {"content": [{"type": "text", "text": "ok"}]},
+        }
+
+    def notify(self, message):  # noqa: ANN001
+        return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class CLITests(unittest.TestCase):
@@ -190,6 +231,47 @@ class CLITests(unittest.TestCase):
         with patch("builtins.input", return_value=""), redirect_stdout(io.StringIO()):
             denied = confirmer.confirm(request)
         self.assertEqual(denied.action, "deny")
+
+    def test_mcp_tools_are_registered_and_config_summary_hides_secrets(self) -> None:
+        class ToolRecordingProvider(FakeProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.tool_names = []
+
+            def stream_chat(self, messages: list[ConversationMessage], tools=None, allow_tool_calls=True, prompt=None):
+                self.calls.append(list(messages))
+                self.tool_names = [tool.name for tool in tools or []]
+                yield StreamEvent(kind="text", text="ok")
+
+        provider = ToolRecordingProvider()
+        config = LLMConfig("openai", "fake-model", "https://example.test/v1", "secret-api-key")
+        output = io.StringIO()
+        old_cwd = Path.cwd()
+        FakeMCPTransport.instances = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".huicode-mcp.yaml").write_text(
+                "mcp:\n  fake:\n    type: stdio\n    command: ignored\n    env:\n      TOKEN: super-secret\n",
+                encoding="utf-8",
+            )
+            os.chdir(root)
+            try:
+                with patch("builtins.input", side_effect=["/config", "hello", "/exit"]), redirect_stdout(output):
+                    exit_code = _run_chat(
+                        provider,
+                        config,
+                        mcp_transport_factory=lambda server: FakeMCPTransport(server.name),
+                    )
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("mcp_servers=1/1", text)
+        self.assertIn("mcp_tools=1", text)
+        self.assertNotIn("super-secret", text)
+        self.assertIn("mcp__fake__echo", provider.tool_names)
+        self.assertTrue(FakeMCPTransport.instances[0].closed)
 
     def test_permission_confirmation_can_deny_bash(self) -> None:
         class BashProvider(FakeProvider):

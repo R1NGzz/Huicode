@@ -9,6 +9,8 @@ from pathlib import Path
 from huicode.agent import run_agent_loop
 from huicode.agent_events import AgentMode, AgentOptions, AgentState
 from huicode.config import ConfigError, LLMConfig, load_config
+from huicode.mcp import MCPConfigError, MCPManager, load_mcp_config, mcp_config_paths
+from huicode.mcp.transport import create_transport
 from huicode.permissions import (
     PermissionConfigError,
     PermissionConfirmation,
@@ -66,13 +68,22 @@ def main(argv: list[str] | None = None) -> int:
     return _run_chat(provider, config)
 
 
-def _run_chat(provider: Provider, config: LLMConfig) -> int:
+def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None) -> int:
     workspace = Path.cwd()
     registry = create_default_registry(workspace)
+    mcp_manager: MCPManager | None = None
+    try:
+        mcp_config = load_mcp_config(mcp_config_paths(workspace))
+        mcp_manager = MCPManager(mcp_config, transport_factory=mcp_transport_factory or create_transport)
+        mcp_manager.start(registry)
+    except MCPConfigError as exc:
+        print(f"MCP 配置错误: {exc}")
+        return 2
     try:
         permission_paths = permission_config_paths(workspace)
         permission_config = load_permission_config(permission_paths)
     except PermissionConfigError as exc:
+        _close_mcp(mcp_manager)
         print(f"权限配置错误: {exc}")
         return 2
 
@@ -88,6 +99,13 @@ def _run_chat(provider: Provider, config: LLMConfig) -> int:
     state = AgentState()
     current_mode: AgentMode = "chat"
     show_usage = config.show_usage
+    if mcp_manager is not None and mcp_manager.server_count:
+        print(
+            f"MCP servers={mcp_manager.active_server_count}/{mcp_manager.server_count} "
+            f"tools={mcp_manager.tool_count} errors={len(mcp_manager.errors)}"
+        )
+        for error in mcp_manager.errors:
+            print(f"MCP server {error.server} skipped: {error.message}")
     print(f"HuiCode 已连接: {provider.name}:{provider.model}")
     print("输入 /exit 退出，/clear 清空会话记忆，/plan 进入计划模式，/do 执行最近计划，/last 展开最近工具结果。")
 
@@ -96,7 +114,7 @@ def _run_chat(provider: Provider, config: LLMConfig) -> int:
             user_text = _read_user_input(prompt_session).strip()
         except EOFError:
             print()
-            return 0
+            return _close_mcp_and_return(mcp_manager, 0)
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
             continue
@@ -106,7 +124,7 @@ def _run_chat(provider: Provider, config: LLMConfig) -> int:
 
         command = user_text.lower()
         if command in {"/exit", "/quit"}:
-            return 0
+            return _close_mcp_and_return(mcp_manager, 0)
         if command == "/clear":
             state.messages.clear()
             state.last_plan = ""
@@ -117,7 +135,7 @@ def _run_chat(provider: Provider, config: LLMConfig) -> int:
             print("本次会话记忆和计划状态已清空。")
             continue
         if command == "/config":
-            print(_format_config_summary(provider, config, show_usage))
+            print(_format_config_summary(provider, config, show_usage, mcp_manager))
             continue
         if command == "/verbose":
             show_usage = not show_usage
@@ -210,13 +228,35 @@ class ConsolePermissionConfirmer:
         return self.prompt_session.prompt(prompt)
 
 
-def _format_config_summary(provider: Provider, config: LLMConfig, show_usage: bool | None = None) -> str:
+def _format_config_summary(
+    provider: Provider,
+    config: LLMConfig,
+    show_usage: bool | None = None,
+    mcp_manager: MCPManager | None = None,
+) -> str:
     summary = f"protocol={provider.name} model={provider.model} base_url={config.base_url}"
     if config.headers:
         summary += f" headers={','.join(sorted(config.headers))}"
     if show_usage is not None:
         summary += f" show_usage={str(show_usage).lower()}"
+    if mcp_manager is not None:
+        summary += (
+            f" mcp_servers={mcp_manager.active_server_count}/{mcp_manager.server_count}"
+            f" mcp_tools={mcp_manager.tool_count}"
+            f" mcp_errors={len(mcp_manager.errors)}"
+        )
     return summary
+
+
+def _close_mcp(manager: MCPManager | None) -> None:
+    if manager is None:
+        return
+    manager.close()
+
+
+def _close_mcp_and_return(manager: MCPManager | None, code: int) -> int:
+    _close_mcp(manager)
+    return code
 
 
 def _format_permission_summary(context: PermissionContext) -> str:
