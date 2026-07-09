@@ -52,7 +52,7 @@ def append_persistent_rule(path: Path, rule: PermissionRule) -> None:
     elif "rules:" not in existing:
         existing = existing.rstrip() + "\nrules:\n"
     raw = rule.raw or f"{rule.tool}({rule.pattern})"
-    line = f"  {raw}: {rule.action}\n"
+    line = f"  {_quote_key(raw)}: {rule.action}\n"
     path.write_text(existing.rstrip() + "\n" + line, encoding="utf-8")
 
 
@@ -129,8 +129,8 @@ def _strip_comment(line: str) -> str:
 def _split_pair(line: str, line_no: int) -> tuple[str, str]:
     if ":" not in line:
         raise PermissionConfigError(f"第 {line_no} 行应为 key: value 格式")
-    key, value = line.split(":", 1)
-    key = key.strip()
+    key, value = line.rsplit(":", 1)
+    key = _unquote_key(key.strip())
     if not key:
         raise PermissionConfigError(f"第 {line_no} 行缺少键")
     return key, value.strip()
@@ -141,3 +141,14 @@ def _parse_scalar(value: str) -> Any:
         return value[1:-1]
     return value
 
+
+def _quote_key(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _unquote_key(value: str) -> str:
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1].replace("''", "'")
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1].replace('\\"', '"')
+    return value

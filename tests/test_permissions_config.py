@@ -49,9 +49,45 @@ class PermissionConfigTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
 
         self.assertIn("rules:", text)
-        self.assertIn("Bash(git status): allow", text)
+        self.assertIn("'Bash(git status)': allow", text)
+
+    def test_windows_path_rule_colon_is_not_split_as_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            local = root / "local.yaml"
+            missing = root / "missing.yaml"
+            local.write_text(
+                "mode: default\n"
+                "rules:\n"
+                "  Bash(dir /s /b C:\\Users\\Administrator\\Documents\\Huicode\\huicode): allow\n",
+                encoding="utf-8",
+            )
+
+            config = load_permission_config(PermissionConfigPaths(missing, missing, local))
+
+        self.assertEqual(config.rules[0].tool, "Bash")
+        self.assertEqual(config.rules[0].action, "allow")
+        self.assertIn("C:\\Users", config.rules[0].pattern)
+
+    def test_append_quotes_windows_path_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".huicode-permissions.local.yaml"
+            append_persistent_rule(
+                path,
+                PermissionRule(
+                    "Bash",
+                    "dir /s /b C:\\Users\\Administrator\\Documents\\Huicode",
+                    "allow",
+                    raw="Bash(dir /s /b C:\\Users\\Administrator\\Documents\\Huicode)",
+                ),
+            )
+
+            text = path.read_text(encoding="utf-8")
+            config = load_permission_config(PermissionConfigPaths(path.with_name("missing"), path.with_name("missing2"), path))
+
+        self.assertIn("'Bash(dir /s /b C:\\Users\\Administrator\\Documents\\Huicode)': allow", text)
+        self.assertEqual(config.rules[0].action, "allow")
 
 
 if __name__ == "__main__":
     unittest.main()
-

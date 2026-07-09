@@ -415,6 +415,39 @@ Bash(dir /s /b ...\huicode)
 - Windows shell 兼容要覆盖模型常见混写：`dir | head`、`Get-ChildItem | Select-Object`。
 - 上下文压缩不能一刀切省略工具核心字段；对 `Find/Search`，`matches` 就是关键证据。
 
+## 踩坑 16：Windows 路径写进权限规则后，`C:` 会把 YAML 解析器拆坏
+
+现象：
+
+用户在权限确认里对 `Bash(dir /s /b C:\Users\Administrator\Documents\Huicode\huicode)` 选择 `always` 后，HuiCode 把规则写入 `.huicode-permissions.local.yaml`：
+
+```yaml
+rules:
+  Bash(dir /s /b C:\Users\Administrator\Documents\Huicode\huicode): allow
+```
+
+下次启动直接失败：
+
+```text
+权限配置错误: 权限规则 Bash(dir /s /b C 的结果必须是 allow 或 deny
+```
+
+根因：
+
+权限配置解析器用第一个冒号拆分 `key: value`，Windows 绝对路径里的 `C:` 被误判成 YAML 分隔符。写入器也没有给复杂规则 key 加引号，导致本地持久规则很容易把自己写成启动阻塞文件。
+
+后来补救：
+
+- 权限规则解析改为从右侧拆分 `key: value`，兼容已经写入的旧未加引号 Windows 路径规则。
+- `append_persistent_rule()` 写入规则时给 key 加单引号，并处理单引号转义。
+- 测试覆盖旧格式 `C:\...` 规则加载，以及新规则写入后可再次加载。
+
+以后写 spec 要补：
+
+- 任何会写 YAML 的功能都要覆盖 Windows 路径、冒号、井号、括号和引号。
+- 持久化规则写入后必须立刻用同一个 loader 回读，防止“写成功但下次启动炸”。
+- 用户级/项目级/本地级配置文件错误应该尽可能定位到具体文件和行。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -435,6 +468,7 @@ Bash(dir /s /b ...\huicode)
 14. 新增配置是否既支持主配置入口，又说明与用户级/项目级文件的覆盖优先级？
 15. 网络/Provider 错误是否区分连接前失败、HTTP 错误和流式中途断开，并有清楚文案？
 16. 真实用户查询项目结构时，是否会优先用读类工具，并避免只读 Bash 反复确认？
+17. 写入配置文件后，是否用真实 loader 回读验证 Windows 路径和特殊字符不会破坏下次启动？
 
 ## 维护约定
 
