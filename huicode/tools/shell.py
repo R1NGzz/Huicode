@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Any
 
@@ -34,6 +35,7 @@ class RunCommandTool:
         except (TypeError, ValueError):
             return ToolResult.failure("invalid_request", "参数 timeout_seconds 必须是整数")
 
+        command, line_limit = _prepare_command(command)
         try:
             completed = subprocess.run(
                 command,
@@ -43,7 +45,8 @@ class RunCommandTool:
                 capture_output=True,
                 timeout=timeout,
             )
-            stdout = _truncate(completed.stdout, context.max_output_chars)
+            stdout = _limit_lines(completed.stdout, line_limit)
+            stdout = _truncate(stdout, context.max_output_chars)
             stderr = _truncate(completed.stderr, context.max_output_chars)
             ok = completed.returncode == 0
             data = {
@@ -84,6 +87,25 @@ def _truncate(value: str | bytes, limit: int) -> str:
     return value[:limit] + "\n...[truncated]"
 
 
+def _limit_lines(value: str | bytes, limit: int | None) -> str | bytes:
+    if limit is None:
+        return value
+    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+    return "\n".join(text.splitlines()[:limit])
+
+
+def _prepare_command(command: str) -> tuple[str, int | None]:
+    command, line_limit = _strip_trailing_head(command)
+    return _normalize_command(command), line_limit
+
+
+def _strip_trailing_head(command: str) -> tuple[str, int | None]:
+    match = re.search(r"(?is)\|\s*head(?:\.exe)?\s+(?:-n\s*)?-?(\d+)\s*$", command.strip())
+    if not match:
+        return command, None
+    return command[: match.start()].strip(), int(match.group(1))
+
+
 def _normalize_command(command: str) -> str:
     if os.name != "nt":
         return command
@@ -94,4 +116,24 @@ def _normalize_command(command: str) -> str:
         "ls -la": "dir /a",
         "ls -al": "dir /a",
     }
-    return aliases.get(stripped, command)
+    normalized = aliases.get(stripped, command)
+    if _looks_like_powershell_command(normalized):
+        escaped = normalized.replace('"', '`"')
+        return f'powershell -NoProfile -Command "{escaped}"'
+    return normalized
+
+
+def _looks_like_powershell_command(command: str) -> bool:
+    lowered = command.strip().lower()
+    if lowered.startswith(("powershell ", "powershell.exe ", "pwsh ", "pwsh.exe ")):
+        return False
+    return lowered.startswith(
+        (
+            "get-childitem",
+            "gci ",
+            "get-content",
+            "select-string",
+            "test-path",
+            "get-location",
+        )
+    )

@@ -138,7 +138,6 @@ def render_agent_event(event: AgentEvent, output: TextIO) -> None:
         _flush_markdown_buffer(output, state)
         elapsed = _tool_elapsed(state, event.tool_call.id if event.tool_call else "")
         print(format_tool_result_line(event.tool_result, elapsed, event.tool_call), file=output)
-        _print_spill_notice(output, event.tool_result)
         return
 
     if event.kind == "usage":
@@ -404,15 +403,6 @@ def _inline_code_text(text: str):
         last = match.end()
     rendered.append(text[last:])
     return rendered
-
-
-def _print_spill_notice(output: TextIO, result: ToolResult) -> None:
-    spill = (result.data or {}).get("__spilled__") if result.data else None
-    if not isinstance(spill, dict):
-        return
-    freed = spill.get("chars_freed", 0)
-    path = spill.get("path", "")
-    print(f"  ◦ spilled 1 tool result(s) to disk (~{freed} chars freed): {path}", file=output)
 
 
 def _render_context_event(output: TextIO, data: dict[str, Any]) -> None:

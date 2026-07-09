@@ -13,6 +13,10 @@ class SearchToolTests(unittest.TestCase):
             (workspace / "pkg").mkdir()
             (workspace / "pkg" / "a.py").write_text("print('a')", encoding="utf-8")
             (workspace / "pkg" / "b.txt").write_text("b", encoding="utf-8")
+            (workspace / ".git").mkdir()
+            (workspace / ".git" / "ignored.py").write_text("print('ignored')", encoding="utf-8")
+            (workspace / ".huicode" / "tool-results").mkdir(parents=True)
+            (workspace / ".huicode" / "tool-results" / "ignored.py").write_text("{}", encoding="utf-8")
 
             result = FindFilesTool().run({"pattern": "*.py"}, ToolContext(workspace=workspace))
 
@@ -24,6 +28,8 @@ class SearchToolTests(unittest.TestCase):
             workspace = Path(directory)
             (workspace / "a.py").write_text("def hello():\n    return 'world'\n", encoding="utf-8")
             (workspace / "b.txt").write_text("hello text\n", encoding="utf-8")
+            (workspace / "__pycache__").mkdir()
+            (workspace / "__pycache__" / "cached.py").write_text("hello cache\n", encoding="utf-8")
 
             result = SearchCodeTool().run({"pattern": "hello", "glob": "*.py"}, ToolContext(workspace=workspace))
 

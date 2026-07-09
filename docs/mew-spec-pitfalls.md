@@ -377,6 +377,44 @@ SSE 客户端只把 `urllib` 的连接异常原样包成“无法连接 API”�
 - 只允许对“尚未收到响应”的连接失败自动重试；已开始流式输出后不能静默重放请求。
 - 用户可见错误要给出排查方向，不要只暴露 Python/SSL 底层异常。
 
+## 踩坑 15：查项目结构时模型退回 Bash，会把用户拖进确认地狱
+
+现象：
+
+用户让 HuiCode “看一下这个项目的代码结构”，模型先调了 `Find(*)`，随后又连续调用：
+
+```text
+Bash(dir /b /s ... | head -100)
+Bash(Get-ChildItem -Recurse -Depth 2 -Name | Select-Object -First 100)
+Bash(dir /s /b ...\huicode)
+```
+
+默认权限模式把所有 `Bash` 都当中风险副作用操作，于是每一次只读目录查看都要求用户确认。部分命令还混用了 Unix `head`、cmd `dir` 和 PowerShell `Get-ChildItem`，在 Windows 上失败。与此同时，`Find(*)` 结果被压缩后没有保留足够的 `matches`，模型又倾向继续找。
+
+根因：
+
+- 工具提示写了“优先用 Find”，但执行层没有降低只读 Bash 的摩擦。
+- 权限系统只有工具级 `side_effect=True/False`，没有参数级风险判定。
+- Windows shell 兼容只覆盖了少数 `ls` 别名，没有处理 `| head -N` 和 PowerShell cmdlet。
+- 上下文压缩把 `matches` 视为可省略字段，对“项目结构”这类任务反而丢掉了核心证据。
+- TUI 同时在工具结果和上下文事件里显示 spill，视觉上像重复整理。
+
+后来补救：
+
+- 默认模式下，白名单内只读 Bash 命令如 `dir`、`tree`、`Get-ChildItem`、`Get-Content`、`Select-String`、`git status/diff/log` 等按低风险放行；包含重定向、链式控制符或 workspace 外绝对路径时仍需确认。
+- Windows 下将尾部 `| head -N` 转成 HuiCode 内部行数限制，避免依赖不存在的 `head`。
+- Windows 下识别 PowerShell cmdlet，并包装成 `powershell -NoProfile -Command ...` 执行。
+- `Find`/`Search` 跳过 `.git`、`__pycache__` 和 `.huicode/tool-results` 噪音目录。
+- 轻量压缩保留 `matches` 前 80 条，避免模型只看到“ok, 50 files”。
+- TUI spill 提示只保留“上下文整理”事件，不在工具结果下重复显示。
+
+以后写 spec 要补：
+
+- 权限系统不只要按工具分类，也要按参数/命令内容识别低风险只读操作。
+- 查询项目结构是 Agent 的核心 E2E 场景，必须验收“不需要用户反复确认也能完成”。
+- Windows shell 兼容要覆盖模型常见混写：`dir | head`、`Get-ChildItem | Select-Object`。
+- 上下文压缩不能一刀切省略工具核心字段；对 `Find/Search`，`matches` 就是关键证据。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -396,6 +434,7 @@ SSE 客户端只把 `urllib` 的连接异常原样包成“无法连接 API”�
 13. Windows 下 `subprocess` 能否直接找到配置里的 `command`？
 14. 新增配置是否既支持主配置入口，又说明与用户级/项目级文件的覆盖优先级？
 15. 网络/Provider 错误是否区分连接前失败、HTTP 错误和流式中途断开，并有清楚文案？
+16. 真实用户查询项目结构时，是否会优先用读类工具，并避免只读 Bash 反复确认？
 
 ## 维护约定
 

@@ -97,6 +97,79 @@ class PermissionEngineTests(unittest.TestCase):
         self.assertEqual(len(confirmer.requests), 1)
         self.assertEqual(permission_context.session_rules[0].tool, "Write")
 
+    def test_default_mode_allows_read_only_bash_without_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            confirmer = FakeConfirmer("deny")
+            context = ToolContext(
+                workspace,
+                permissions=PermissionContext(workspace=workspace, mode="default", confirmer=confirmer),
+            )
+
+            decision = evaluate_permission(
+                ToolCall("1", "Bash", {"command": "dir /b | head -100"}),
+                RunCommandTool(),
+                context,
+            )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.risk, "low")
+        self.assertEqual(confirmer.requests, [])
+
+    def test_default_mode_still_confirms_bash_with_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            confirmer = FakeConfirmer("deny")
+            context = ToolContext(
+                workspace,
+                permissions=PermissionContext(workspace=workspace, mode="default", confirmer=confirmer),
+            )
+
+            decision = evaluate_permission(
+                ToolCall("1", "Bash", {"command": "echo hi > hello.txt"}),
+                RunCommandTool(),
+                context,
+            )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(len(confirmer.requests), 1)
+
+    def test_read_only_bash_outside_workspace_is_not_low_risk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            confirmer = FakeConfirmer("deny")
+            context = ToolContext(
+                workspace,
+                permissions=PermissionContext(workspace=workspace, mode="default", confirmer=confirmer),
+            )
+
+            decision = evaluate_permission(
+                ToolCall("1", "Bash", {"command": "dir C:\\Windows"}),
+                RunCommandTool(),
+                context,
+            )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(len(confirmer.requests), 1)
+
+    def test_git_diff_output_option_is_not_low_risk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            confirmer = FakeConfirmer("deny")
+            context = ToolContext(
+                workspace,
+                permissions=PermissionContext(workspace=workspace, mode="default", confirmer=confirmer),
+            )
+
+            decision = evaluate_permission(
+                ToolCall("1", "Bash", {"command": "git diff --output=patch.txt"}),
+                RunCommandTool(),
+                context,
+            )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(len(confirmer.requests), 1)
+
     def test_permission_denied_result_is_structured(self) -> None:
         decision = evaluate_permission(
             ToolCall("1", "Bash", {"command": "git status"}),

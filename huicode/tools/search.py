@@ -15,6 +15,16 @@ def _is_probably_text(path: Path) -> bool:
     return b"\x00" not in chunk
 
 
+def _should_skip_path(workspace: Path, path: Path) -> bool:
+    try:
+        parts = path.relative_to(workspace).parts
+    except ValueError:
+        return True
+    if any(part in {".git", "__pycache__"} for part in parts):
+        return True
+    return len(parts) >= 2 and parts[0] == ".huicode" and parts[1] == "tool-results"
+
+
 class FindFilesTool:
     name = "Find"
     description = "按文件名或相对路径模式查找当前工作目录内的文件。需要列目录、找文件或 glob 时优先使用本工具，不要先调用 Bash。"
@@ -41,6 +51,8 @@ class FindFilesTool:
         matches: list[str] = []
         for path in context.workspace.rglob("*"):
             if not path.is_file():
+                continue
+            if _should_skip_path(context.workspace, path):
                 continue
             rel = path.relative_to(context.workspace).as_posix()
             if fnmatch(rel, pattern) or fnmatch(path.name, pattern):
@@ -79,6 +91,8 @@ class SearchCodeTool:
         matches: list[dict[str, Any]] = []
         for path in context.workspace.rglob("*"):
             if not path.is_file():
+                continue
+            if _should_skip_path(context.workspace, path):
                 continue
             rel = path.relative_to(context.workspace).as_posix()
             if not (fnmatch(rel, glob) or fnmatch(path.name, glob)):

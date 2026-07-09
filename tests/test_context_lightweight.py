@@ -29,6 +29,25 @@ class ContextLightweightTests(unittest.TestCase):
             self.assertIn("preview", compacted.data)
             self.assertIn("content", (workspace / spill.path).read_text(encoding="utf-8"))
 
+    def test_spilled_find_result_keeps_matches_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            estimator = TokenEstimator()
+            store = ToolResultStore(workspace, estimator)
+            config = ContextConfig(single_tool_result_tokens=10, preview_chars=80)
+            call = ToolCall("call_1", "Find", {"pattern": "*"})
+            result = ToolResult.success(
+                {"pattern": "*", "matches": [f"file_{index}.py" for index in range(100)], "count": 100},
+                "ok, 100 files",
+            )
+
+            compacted, spill = compact_single_tool_result(call, result, store, config, estimator, iteration=1)
+
+        self.assertIsNotNone(spill)
+        self.assertEqual(len(compacted.data["matches"]), 80)
+        self.assertEqual(compacted.data["matches_omitted_count"], 20)
+        self.assertEqual(compacted.data["matches"][0], "file_0.py")
+
     def test_group_compacts_largest_results_first(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
@@ -76,4 +95,3 @@ class ContextLightweightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -212,6 +212,37 @@ class TUITests(unittest.TestCase):
         self.assertIn("summary created", rendered)
         self.assertIn("上下文压缩失败", rendered)
 
+    def test_spilled_tool_result_notice_only_renders_as_context_event(self) -> None:
+        output = io.StringIO()
+        call = ToolCall(id="1", name="Find", arguments={"pattern": "*"})
+        result = ToolResult.success(
+            {
+                "__spilled__": {
+                    "path": ".huicode/tool-results/turn-001-call_1.json",
+                    "chars_freed": 9000,
+                }
+            },
+            "ok, 50 files",
+        )
+
+        render_agent_event(AgentEvent(kind="tool_result", tool_call=call, tool_result=result), output)
+        render_agent_event(
+            AgentEvent(
+                kind="context",
+                data={
+                    "kind": "lightweight",
+                    "spilled_count": 1,
+                    "tokens_freed": 2000,
+                    "paths": [".huicode/tool-results/turn-001-call_1.json"],
+                },
+            ),
+            output,
+        )
+
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count("spilled 1 tool result(s) to disk"), 1)
+        self.assertIn("✓ Find(*)", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

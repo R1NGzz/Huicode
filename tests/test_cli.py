@@ -63,6 +63,15 @@ class FakeMCPTransport:
 
 
 class CLITests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_cwd = Path.cwd()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        os.chdir(self._tmpdir.name)
+
+    def tearDown(self) -> None:
+        os.chdir(self._old_cwd)
+        self._tmpdir.cleanup()
+
     def test_config_command_does_not_print_api_key_and_exit_works(self) -> None:
         provider = FakeProvider()
         config = LLMConfig(
@@ -124,6 +133,7 @@ class CLITests(unittest.TestCase):
 
         provider = ToolProvider()
         config = LLMConfig("openai", "fake-model", "https://example.test/v1", "secret-api-key")
+        Path("README.md").write_text("hello", encoding="utf-8")
         output = io.StringIO()
         with patch("builtins.input", side_effect=["读 README", "/exit"]), redirect_stdout(output):
             exit_code = _run_chat(provider, config)
@@ -331,7 +341,7 @@ class CLITests(unittest.TestCase):
                 self.calls.append(list(messages))
                 self.turn += 1
                 if self.turn == 1:
-                    yield StreamEvent(kind="tool_call", tool_call=ToolCall("call_1", "Bash", {"command": "git status"}))
+                    yield StreamEvent(kind="tool_call", tool_call=ToolCall("call_1", "Bash", {"command": "echo hi > a.txt"}))
                 else:
                     yield StreamEvent(kind="text", text="已调整。")
 

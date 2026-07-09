@@ -1,6 +1,9 @@
 import io
+import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from huicode.cli import _run_chat
@@ -24,6 +27,15 @@ class ContextAwareProvider:
 
 
 class CLIContextTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_cwd = Path.cwd()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        os.chdir(self._tmpdir.name)
+
+    def tearDown(self) -> None:
+        os.chdir(self._old_cwd)
+        self._tmpdir.cleanup()
+
     def test_compact_and_context_commands(self) -> None:
         provider = ContextAwareProvider()
         config = LLMConfig(

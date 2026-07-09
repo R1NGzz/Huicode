@@ -10,7 +10,7 @@ from huicode.permissions.base import (
 from huicode.permissions.blacklist import check_dangerous_command
 from huicode.permissions.config import append_persistent_rule
 from huicode.permissions.rules import match_rule, target_value_for_call
-from huicode.permissions.sandbox import extract_tool_paths, resolve_workspace_path
+from huicode.permissions.sandbox import extract_tool_paths, is_within_workspace, resolve_workspace_path
 from huicode.providers.base import ToolCall
 from huicode.tools.base import ToolContext, ToolResult
 
@@ -38,7 +38,7 @@ def evaluate_permission(call: ToolCall, tool, context: ToolContext) -> Permissio
             return _decision_from_rule(rule)
 
     target = target_value_for_call(call)
-    risk = _risk_for_tool(tool)
+    risk = _risk_for_call(call, tool, context)
     if permissions.mode == "strict":
         return PermissionDecision(False, "严格模式拒绝未匹配规则的工具调用", "mode", risk=risk)
     if permissions.mode == "permissive":
@@ -109,6 +109,12 @@ def _decision_from_confirmation(
     return PermissionDecision(True, "用户允许本次工具调用", "confirmation", risk=risk)
 
 
+def _risk_for_call(call: ToolCall, tool, context: ToolContext) -> str:
+    if call.name == "Bash" and _is_read_only_shell_command(_string_arg(call.arguments, "command"), context):
+        return "low"
+    return _risk_for_tool(tool)
+
+
 def _risk_for_tool(tool) -> str:
     if tool is None:
         return "high"
@@ -121,3 +127,70 @@ def _string_arg(args: dict[str, object], key: str) -> str:
     value = args.get(key)
     return value if isinstance(value, str) else ""
 
+
+def _is_read_only_shell_command(command: str, context: ToolContext) -> bool:
+    if not command.strip():
+        return False
+    lowered = command.lower()
+    if any(operator in lowered for operator in (">", ">>", "&&", "||", ";")):
+        return False
+    if not _absolute_paths_stay_in_workspace(command, context):
+        return False
+    segments = [segment.strip() for segment in command.split("|")]
+    return bool(segments) and all(_is_read_only_shell_segment(segment) for segment in segments)
+
+
+def _is_read_only_shell_segment(segment: str) -> bool:
+    if not segment:
+        return False
+    normalized = segment.strip().lower()
+    if normalized.startswith(("cmd /c ", "powershell ", "powershell.exe ", "pwsh ", "pwsh.exe ")):
+        return False
+
+    first = normalized.split(maxsplit=1)[0]
+    if first in {
+        "dir",
+        "tree",
+        "where",
+        "where.exe",
+        "findstr",
+        "findstr.exe",
+        "type",
+        "more",
+        "ls",
+        "cat",
+        "pwd",
+        "head",
+        "sort",
+    }:
+        return True
+    if first in {"get-childitem", "gci", "get-content", "select-string", "test-path", "get-location"}:
+        return True
+    if first == "select-object" and (" -first " in f" {normalized} " or normalized.startswith("select-object -first")):
+        return True
+    if normalized.startswith("git "):
+        return _is_read_only_git_command(normalized)
+    return False
+
+
+def _is_read_only_git_command(command: str) -> bool:
+    parts = command.split()
+    if len(parts) < 2:
+        return False
+    if any(part == "-o" or part.startswith("--output") for part in parts[2:]):
+        return False
+    return parts[1] in {"status", "diff", "log", "show", "branch", "ls-files", "rev-parse", "remote"}
+
+
+def _absolute_paths_stay_in_workspace(command: str, context: ToolContext) -> bool:
+    import re
+
+    workspace = (context.permissions.workspace if context.permissions and context.permissions.workspace else context.workspace)
+    for match in re.finditer(r"(?i)([A-Z]:\\[^\s|\"']+)", command):
+        try:
+            resolved = resolve_workspace_path(workspace, match.group(1))
+        except ValueError:
+            return False
+        if not is_within_workspace(workspace, resolved):
+            return False
+    return True

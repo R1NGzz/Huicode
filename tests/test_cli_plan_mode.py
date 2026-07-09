@@ -1,6 +1,9 @@
 import io
+import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from huicode.cli import _run_chat
@@ -32,7 +35,14 @@ class InspectableProvider:
 
 class CLIPlanModeTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._old_cwd = Path.cwd()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        os.chdir(self._tmpdir.name)
         self.config = LLMConfig("openai", "fake-model", "https://example.test/v1", "secret-api-key")
+
+    def tearDown(self) -> None:
+        os.chdir(self._old_cwd)
+        self._tmpdir.cleanup()
 
     def test_plan_command_filters_to_read_only_tools(self) -> None:
         provider = InspectableProvider()

@@ -117,11 +117,17 @@ def _compact_tool_data(data: dict[str, object] | None) -> dict[str, object]:
         "chars",
         "bytes",
         "count",
+        "matches",
         "pattern",
         "server",
         "tool",
     }
     compact = {key: value for key, value in data.items() if key in keep}
+    if isinstance(compact.get("matches"), list):
+        matches = compact["matches"]
+        compact["matches"] = matches[:80]
+        if len(matches) > 80:
+            compact["matches_omitted_count"] = len(matches) - 80
     omitted = sorted(key for key in data if key not in keep)
     if omitted:
         compact["omitted_fields"] = omitted
@@ -147,4 +153,3 @@ def _call_for_tool_message(
         if tool_name and call.name == tool_name:
             return call
     return tool_calls[0] if tool_calls else None
-
