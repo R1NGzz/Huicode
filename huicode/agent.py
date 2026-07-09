@@ -61,13 +61,18 @@ def run_agent_loop(
     user_text: str,
     config: LLMConfig,
     options: AgentOptions,
+    memory=None,
 ) -> Iterator[AgentEvent]:
     state.cancel_requested = False
     state.iterations = 0
     state.unknown_tool_count = 0
     empty_response_count = 0
     context_manager = ContextManager(context.workspace, config.context)
-    state.messages.append(ConversationMessage(role="user", content=_build_user_text(user_text, state, options)))
+    turn_start = len(state.messages)
+    user_message = ConversationMessage(role="user", content=_build_user_text(user_text, state, options))
+    state.messages.append(user_message)
+    if memory is not None:
+        memory.record_message(state, user_message)
 
     while state.iterations < options.max_iterations:
         state.iterations += 1
@@ -82,6 +87,8 @@ def run_agent_loop(
             },
         )
         try:
+            if memory is not None:
+                memory.refresh_prompt_memory(state)
             prompt = build_agent_prompt(context=context, registry=registry, state=state, options=options, iteration=iteration)
             selected_tools = select_tools(registry, options)
             preparation = context_manager.prepare_before_request(
@@ -150,20 +157,25 @@ def run_agent_loop(
             return
 
         empty_response_count = 0
-        state.messages.append(
-            ConversationMessage(
-                role="assistant",
-                content=response.text,
-                thinking=response.thinking,
-                thinking_signature=response.thinking_signature,
-                tool_calls=response.tool_calls,
-            )
+        assistant_message = ConversationMessage(
+            role="assistant",
+            content=response.text,
+            thinking=response.thinking,
+            thinking_signature=response.thinking_signature,
+            tool_calls=response.tool_calls,
         )
+        state.messages.append(assistant_message)
+        if memory is not None:
+            memory.record_message(state, assistant_message)
 
         if not response.tool_calls:
             state.unknown_tool_count = 0
             if options.mode == "plan" and response.text:
                 state.last_plan = response.text
+            if memory is not None:
+                report = memory.schedule_update_after_final(state, options.mode, turn_start)
+                if report.message and not report.noop:
+                    yield AgentEvent(kind="memory", iteration=iteration, data={"message": report.message, "ok": report.ok})
             yield AgentEvent(kind="done", iteration=iteration, stop_reason="final")
             return
 
@@ -175,6 +187,7 @@ def run_agent_loop(
             iteration,
             options,
             context_manager,
+            memory,
         )
         if _all_unknown_tool_results(outcomes):
             state.unknown_tool_count += len(outcomes)
@@ -279,6 +292,9 @@ def build_agent_prompt(
         available_tools=tuple(tool.name for tool in selected_tools),
         read_only_tool_names=tuple(sorted(options.read_only_tool_names)),
         last_plan=state.last_plan,
+        custom_instructions=state.memory.instructions_text,
+        memory_index=state.memory.memory_index_text,
+        memory_warnings=tuple(state.memory.warnings),
     )
     return build_prompt_bundle(prompt_context)
 
@@ -306,6 +322,7 @@ def execute_tool_batches(
     iteration: int,
     options: AgentOptions | None = None,
     context_manager: ContextManager | None = None,
+    memory=None,
 ) -> Iterator[AgentEvent]:
     options = options or AgentOptions()
     batch = batch_tool_calls(calls, registry)
@@ -332,7 +349,10 @@ def execute_tool_batches(
             context_report = None
             if context_manager is not None:
                 result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
-            state.messages.append(_tool_message(call, result))
+            tool_message = _tool_message(call, result)
+            state.messages.append(tool_message)
+            if memory is not None:
+                memory.record_message(state, tool_message)
             outcomes.append((call, result))
             yield AgentEvent(kind="tool_result", tool_call=call, tool_result=result, iteration=iteration)
             if context_report is not None:
@@ -346,7 +366,10 @@ def execute_tool_batches(
         context_report = None
         if context_manager is not None:
             result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
-        state.messages.append(_tool_message(call, result))
+        tool_message = _tool_message(call, result)
+        state.messages.append(tool_message)
+        if memory is not None:
+            memory.record_message(state, tool_message)
         outcomes.append((call, result))
         yield AgentEvent(kind="tool_result", tool_call=call, tool_result=result, iteration=iteration)
         if context_report is not None:

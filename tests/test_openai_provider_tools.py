@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from huicode.config import LLMConfig
+from huicode.prompts import PromptContext, build_prompt_bundle
 from huicode.providers.base import ConversationMessage, ToolCall, ToolSpec
 from huicode.providers.openai import OpenAIProvider
 from huicode.sse import SSEEvent
@@ -76,6 +77,38 @@ class OpenAIProviderToolTests(unittest.TestCase):
         self.assertIn("compression_boundary", payload["messages"][1]["content"])
         self.assertEqual(payload["messages"][2]["tool_calls"][0]["id"], "call_1")
         self.assertEqual(payload["messages"][3]["role"], "tool")
+
+    def test_serializes_memory_prompt_with_restored_tool_history(self) -> None:
+        config = LLMConfig("openai", "gpt-test", "https://api.openai.com/v1", "key")
+        prompt = build_prompt_bundle(
+            PromptContext(
+                workspace=__import__("pathlib").Path("C:/work/project"),
+                platform="Windows",
+                shell="powershell",
+                now="2026-07-09T12:00:00+08:00",
+                mode="chat",
+                iteration=1,
+                max_iterations=8,
+                custom_instructions="项目指令",
+                memory_index="- [mem-1] 入口知识 (source: .huicode/memory/notes/mem-1.md)",
+            )
+        )
+        call = ToolCall(id="call_1", name="Read", arguments={"path": "README.md"})
+        messages = [
+            ConversationMessage("user", "old"),
+            ConversationMessage("assistant", "", tool_calls=[call]),
+            ConversationMessage("tool", "", tool_call_id="call_1", tool_name="Read", tool_result=ToolResult.success({"content": "hi"}, "ok")),
+        ]
+
+        with patch("huicode.providers.openai.post_sse", return_value=iter([SSEEvent(None, "[DONE]")])) as mock_post:
+            list(OpenAIProvider(config).stream_chat(messages, tools=[], allow_tool_calls=False, prompt=prompt))
+
+        payload = mock_post.call_args.kwargs["payload"]
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertIn("项目指令", payload["messages"][0]["content"])
+        self.assertIn("memory_index", payload["messages"][2]["content"])
+        self.assertEqual(payload["messages"][-2]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(payload["messages"][-1]["tool_call_id"], "call_1")
 
 
 if __name__ == "__main__":

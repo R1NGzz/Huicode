@@ -274,6 +274,76 @@ tokens: input_tokens=1200, output_tokens=200, cache_creation_input_tokens=800, c
 
 当前实现会优先保持协议兼容，不强制向 DeepSeek Anthropic 兼容接口加入可能不支持的 `cache_control` 字段。
 
+## 记忆系统
+
+HuiCode 启动后可以自动恢复项目知识和用户偏好。记忆系统分三层：
+
+- 项目指令：启动和每轮请求前加载，作为系统级上下文注入。
+- 会话存档：当前对话以 JSONL 追加写入，坏行可跳过，恢复时会截断不完整工具调用。
+- 自动笔记：最终回复自然结束后整理为长期记忆，并重建精简索引。
+
+配置示例：
+
+```yaml
+memory:
+  enabled: true
+  auto_update: true
+  session_retention_days: 30
+  stale_session_notice_hours: 24
+  index_max_lines: 200
+  index_max_bytes: 25600
+```
+
+项目指令文件按优先级加载：
+
+```text
+<workspace>/.huicode/instructions.md
+<workspace>/.mewcode/instructions.md
+<workspace>/HUICODE.md
+<workspace>/MEWCODE.md
+~/.huicode/instructions.md
+~/.mewcode/instructions.md
+```
+
+指令文件支持 `@include relative/path.md`。项目级 include 必须留在 workspace 内，用户级 include 必须留在用户配置目录内；循环、过深、缺失和越界引用会跳过并产生 warning。
+
+会话存档位置：
+
+```text
+<workspace>/.huicode/sessions/<session-id>.jsonl
+```
+
+长期笔记和索引位置：
+
+```text
+<workspace>/.huicode/memory/notes/*.md
+<workspace>/.huicode/memory/index.md
+~/.huicode/memory/notes/*.md
+~/.huicode/memory/index.md
+```
+
+笔记分为四类：`preference`、`correction`、`project_knowledge`、`reference`。索引默认限制在 200 行和 25KB 内，只保存摘要和 source 提示；需要细节时应重新读取笔记或项目文件，不要凭索引脑补。
+
+记忆命令：
+
+```text
+/memory
+/memory update
+/memory rebuild
+/sessions
+/resume <session-id>
+/sessions clean
+```
+
+- `/memory`：查看当前 session、笔记数量、索引大小和最近错误。
+- `/memory update`：手动根据最近对话整理记忆。
+- `/memory rebuild`：从笔记重建索引。
+- `/sessions`：列出可恢复会话。
+- `/resume <session-id>`：恢复指定会话，坏行跳过，破损工具历史截断。
+- `/sessions clean`：清理超过保留期的非活动会话。
+
+`/clear` 只清空当前工作上下文并开启新 session，不删除历史 session、长期笔记或索引。记忆状态、索引和笔记写入前会做基础 secret 脱敏，不会主动输出 API key、Authorization、token、password 等敏感值。
+
 ## 启动
 
 ```powershell
@@ -329,13 +399,17 @@ context:
 - `/do [任务]`：基于最近计划执行；不带任务时继续最近计划
 - `/verbose`：切换 token 用量显示，默认关闭
 - `/last [数量]`：展开最近工具结果，默认 1 条，最大 5 条
+- `/memory`：查看记忆状态、当前 session、笔记数量和索引大小
+- `/memory update`：手动根据最近对话整理记忆
+- `/memory rebuild`：从笔记重建记忆索引
+- `/sessions`：列出可恢复会话
+- `/resume <session-id>`：恢复指定会话
+- `/sessions clean`：清理过期非活动会话
 - `/permissions [strict|default|permissive]`：查看或切换权限模式
 - `/perm [strict|default|permissive]`：`/permissions` 的短别名
 
 ## 本阶段暂不包含
 
-- 项目指令文件加载
-- 自动记忆
 - 自动化评估
 - 网络请求限制
 - CPU、内存、磁盘、进程数等资源配额

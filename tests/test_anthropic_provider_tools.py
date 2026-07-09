@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from huicode.config import LLMConfig
+from huicode.prompts import PromptContext, build_prompt_bundle
 from huicode.providers.anthropic import AnthropicProvider
 from huicode.providers.base import ConversationMessage, ToolCall, ToolSpec
 from huicode.sse import SSEEvent
@@ -155,6 +156,38 @@ class AnthropicProviderToolTests(unittest.TestCase):
         self.assertIn("compression_boundary", payload["messages"][1]["content"])
         self.assertEqual(payload["messages"][2]["content"][0]["id"], "toolu_1")
         self.assertEqual(payload["messages"][3]["content"][0]["tool_use_id"], "toolu_1")
+
+    def test_serializes_memory_prompt_with_restored_tool_history(self) -> None:
+        config = LLMConfig("anthropic", "claude-test", "https://api.anthropic.com/v1", "key")
+        prompt = build_prompt_bundle(
+            PromptContext(
+                workspace=__import__("pathlib").Path("C:/work/project"),
+                platform="Windows",
+                shell="powershell",
+                now="2026-07-09T12:00:00+08:00",
+                mode="chat",
+                iteration=1,
+                max_iterations=8,
+                custom_instructions="项目指令",
+                memory_index="- [mem-1] 入口知识 (source: .huicode/memory/notes/mem-1.md)",
+            )
+        )
+        call = ToolCall(id="toolu_1", name="Read", arguments={"path": "README.md"})
+        messages = [
+            ConversationMessage("user", "old"),
+            ConversationMessage("assistant", "", tool_calls=[call]),
+            ConversationMessage("tool", "", tool_call_id="toolu_1", tool_name="Read", tool_result=ToolResult.success({"content": "hi"}, "ok")),
+        ]
+
+        with patch("huicode.providers.anthropic.post_sse", return_value=iter([SSEEvent("message_stop", '{"type":"message_stop"}')])) as mock_post:
+            list(AnthropicProvider(config).stream_chat(messages, tools=[], allow_tool_calls=False, prompt=prompt))
+
+        payload = mock_post.call_args.kwargs["payload"]
+        system_text = "\n".join(block["text"] for block in payload["system"])
+        self.assertIn("项目指令", system_text)
+        self.assertIn("memory_index", system_text)
+        self.assertEqual(payload["messages"][-2]["content"][0]["id"], "toolu_1")
+        self.assertEqual(payload["messages"][-1]["content"][0]["tool_use_id"], "toolu_1")
 
 
 if __name__ == "__main__":

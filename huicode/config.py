@@ -27,6 +27,18 @@ class ContextConfig:
 
 
 @dataclass(frozen=True)
+class MemoryConfig:
+    enabled: bool = False
+    auto_update: bool = True
+    instruction_include_depth: int = 5
+    session_retention_days: int = 30
+    stale_session_notice_hours: int = 24
+    index_max_lines: int = 200
+    index_max_bytes: int = 25 * 1024
+    update_timeout_seconds: int = 45
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     protocol: str
     model: str
@@ -36,6 +48,7 @@ class LLMConfig:
     temperature: float | None = None
     thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     headers: dict[str, str] = field(default_factory=dict)
     show_usage: bool = False
     mcp: dict[str, Any] = field(default_factory=dict)
@@ -66,6 +79,12 @@ def load_config(path: str | Path) -> LLMConfig:
         context_raw = {}
     if not isinstance(context_raw, dict):
         raise ConfigError("配置字段 context 必须是 YAML 映射")
+
+    memory_raw = values.get("memory", {})
+    if memory_raw is None:
+        memory_raw = {}
+    if not isinstance(memory_raw, dict):
+        raise ConfigError("配置字段 memory 必须是 YAML 映射")
 
     headers_raw = values.get("headers", {})
     if headers_raw is None:
@@ -111,6 +130,29 @@ def load_config(path: str | Path) -> LLMConfig:
     )
     _validate_context_config(context)
 
+    memory = MemoryConfig(
+        enabled=_as_bool(memory_raw.get("enabled", True), "memory.enabled"),
+        auto_update=_as_bool(memory_raw.get("auto_update", True), "memory.auto_update"),
+        instruction_include_depth=_as_int(
+            memory_raw.get("instruction_include_depth", 5),
+            "memory.instruction_include_depth",
+        ),
+        session_retention_days=_as_int(
+            memory_raw.get("session_retention_days", 30),
+            "memory.session_retention_days",
+        ),
+        stale_session_notice_hours=_as_int(
+            memory_raw.get("stale_session_notice_hours", 24),
+            "memory.stale_session_notice_hours",
+        ),
+        index_max_lines=_as_int(memory_raw.get("index_max_lines", 200), "memory.index_max_lines"),
+        index_max_bytes=_as_int(memory_raw.get("index_max_bytes", 25 * 1024), "memory.index_max_bytes"),
+        update_timeout_seconds=_as_int(
+            memory_raw.get("update_timeout_seconds", 45),
+            "memory.update_timeout_seconds",
+        ),
+    )
+
     return LLMConfig(
         protocol=protocol,
         model=str(values["model"]).strip(),
@@ -127,6 +169,7 @@ def load_config(path: str | Path) -> LLMConfig:
             show=_as_bool(thinking_raw.get("show", False), "thinking.show"),
         ),
         context=context,
+        memory=memory,
     )
 
 

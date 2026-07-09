@@ -59,5 +59,24 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("最近计划摘要", text)
 
 
+    def test_memory_index_is_supplemental_not_stable(self) -> None:
+        context = make_context()
+        context = PromptContext(
+            **{
+                **context.__dict__,
+                "custom_instructions": "项目指令",
+                "memory_index": "- [mem-1] 记忆摘要 (source: .huicode/memory/notes/mem-1.md)",
+                "memory_warnings": ("include missing",),
+            }
+        )
+        bundle = build_prompt_bundle(context)
+
+        self.assertIn("项目指令", bundle.stable_text())
+        self.assertIn("memory_index", bundle.module_names())
+        self.assertIn("记忆摘要", bundle.supplemental_text())
+        self.assertIn("include missing", bundle.supplemental_text())
+        self.assertNotIn("记忆摘要", bundle.stable_text())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ from huicode.agent import run_agent_loop
 from huicode.agent_events import AgentEvent, AgentMode, AgentOptions, AgentState
 from huicode.config import ConfigError, LLMConfig, load_config
 from huicode.context import ContextManager
+from huicode.memory.manager import MemoryManager
 from huicode.mcp import MCPConfigError, MCPManager, load_mcp_config, mcp_config_paths
 from huicode.mcp.transport import create_transport
 from huicode.permissions import (
@@ -48,6 +49,9 @@ COMMANDS = [
     "/perm",
     "/compact",
     "/context",
+    "/memory",
+    "/sessions",
+    "/resume",
 ]
 
 
@@ -101,6 +105,11 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
     tool_context = ToolContext(workspace=workspace, permissions=permission_context)
     state = AgentState()
     context_manager = ContextManager(workspace, config.context)
+    memory_manager: MemoryManager | None = None
+    if config.memory.enabled:
+        memory_manager = MemoryManager(workspace, config.memory, config, provider)
+        for warning in memory_manager.start(state):
+            print(f"记忆提示: {warning}")
     current_mode: AgentMode = "chat"
     show_usage = config.show_usage
     if mcp_manager is not None and mcp_manager.server_count:
@@ -118,7 +127,7 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
             user_text = _read_user_input(prompt_session).strip()
         except EOFError:
             print()
-            return _close_mcp_and_return(mcp_manager, 0)
+            return _close_resources_and_return(mcp_manager, memory_manager, 0)
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
             continue
@@ -128,7 +137,7 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
 
         command = user_text.lower()
         if command in {"/exit", "/quit"}:
-            return _close_mcp_and_return(mcp_manager, 0)
+            return _close_resources_and_return(mcp_manager, memory_manager, 0)
         if command == "/clear":
             state.messages.clear()
             state.last_plan = ""
@@ -136,14 +145,50 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
             state.unknown_tool_count = 0
             state.iterations = 0
             context_manager.reset(state)
+            if memory_manager is not None:
+                memory_manager.clear_current_session(state)
             current_mode = "chat"
             print("本次会话记忆和计划状态已清空。")
             continue
         if command == "/config":
-            print(_format_config_summary(provider, config, state, show_usage, mcp_manager))
+            print(_format_config_summary(provider, config, state, show_usage, mcp_manager, memory_manager))
             continue
         if command == "/context":
             print(_format_context_summary(config, state))
+            continue
+        if command == "/memory":
+            print(_format_memory_summary(memory_manager, state))
+            continue
+        if command == "/memory update":
+            if memory_manager is None:
+                print("记忆系统未启用")
+            else:
+                report = memory_manager.update_now(state, current_mode if current_mode == "plan" else "chat")
+                print(report.message)
+            continue
+        if command == "/memory rebuild":
+            if memory_manager is None:
+                print("记忆系统未启用")
+            else:
+                print(memory_manager.rebuild_index(state))
+            continue
+        if command == "/sessions":
+            print(_format_sessions(memory_manager))
+            continue
+        if command == "/sessions clean":
+            if memory_manager is None:
+                print("记忆系统未启用")
+            else:
+                removed = memory_manager.cleanup_sessions(state)
+                print(f"已清理过期会话 {removed} 个")
+            continue
+        if command.startswith("/resume "):
+            if memory_manager is None:
+                print("记忆系统未启用")
+            else:
+                session_id = command.split(maxsplit=1)[1].strip()
+                report = memory_manager.resume_session(session_id, state, context_manager, tool_context, config)
+                print(_format_resume_report(report))
             continue
         if command == "/compact":
             report = context_manager.manual_compact(
@@ -180,22 +225,22 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
             continue
         if command.startswith("/plan "):
             current_mode = "plan"
-            _run_request(provider, registry, tool_context, state, command[6:].strip(), config, "plan", show_usage)
+            _run_request(provider, registry, tool_context, state, command[6:].strip(), config, "plan", show_usage, memory_manager)
             continue
         if command == "/do":
             if not state.last_plan:
                 print("当前还没有最近计划，请先使用 /plan。")
                 continue
             current_mode = "chat"
-            _run_request(provider, registry, tool_context, state, "请根据最近计划继续执行。", config, "do", show_usage)
+            _run_request(provider, registry, tool_context, state, "请根据最近计划继续执行。", config, "do", show_usage, memory_manager)
             continue
         if command.startswith("/do "):
             current_mode = "chat"
-            _run_request(provider, registry, tool_context, state, command[4:].strip(), config, "do", show_usage)
+            _run_request(provider, registry, tool_context, state, command[4:].strip(), config, "do", show_usage, memory_manager)
             continue
 
         mode: AgentMode = "plan" if current_mode == "plan" else "chat"
-        _run_request(provider, registry, tool_context, state, user_text, config, mode, show_usage)
+        _run_request(provider, registry, tool_context, state, user_text, config, mode, show_usage, memory_manager)
 
 
 def _create_prompt_session():
@@ -253,6 +298,7 @@ def _format_config_summary(
     state: AgentState,
     show_usage: bool | None = None,
     mcp_manager: MCPManager | None = None,
+    memory_manager: MemoryManager | None = None,
 ) -> str:
     summary = f"protocol={provider.name} model={provider.model} base_url={config.base_url}"
     if config.headers:
@@ -270,6 +316,14 @@ def _format_config_summary(
             f" mcp_tools={mcp_manager.tool_count}"
             f" mcp_errors={len(mcp_manager.errors)}"
         )
+    if memory_manager is not None:
+        status = memory_manager.status(state)
+        summary += (
+            f" memory_enabled={str(status.enabled).lower()}"
+            f" memory_session={status.session_id}"
+            f" memory_index_bytes={status.index_bytes}"
+            f" memory_pending={status.pending_updates}"
+        )
     return summary
 
 
@@ -281,6 +335,17 @@ def _close_mcp(manager: MCPManager | None) -> None:
 
 def _close_mcp_and_return(manager: MCPManager | None, code: int) -> int:
     _close_mcp(manager)
+    return code
+
+
+def _close_resources_and_return(
+    manager: MCPManager | None,
+    memory_manager: MemoryManager | None,
+    code: int,
+) -> int:
+    _close_mcp(manager)
+    if memory_manager is not None:
+        memory_manager.close()
     return code
 
 
@@ -304,6 +369,61 @@ def _format_context_summary(config: LLMConfig, state: AgentState) -> str:
         f" failure_count={state.context.summary_failure_count}"
         f" fuse={str(state.context.summary_fuse_open).lower()}"
     )
+
+
+def _format_memory_summary(memory_manager: MemoryManager | None, state: AgentState) -> str:
+    if memory_manager is None:
+        return "memory enabled=false"
+    status = memory_manager.status(state)
+    warnings = "; ".join(status.warnings) if status.warnings else "none"
+    error = status.last_error or "none"
+    return (
+        f"memory enabled={str(status.enabled).lower()}"
+        f" session={status.session_id}"
+        f" project_notes={status.project_notes}"
+        f" user_notes={status.user_notes}"
+        f" index_lines={status.index_lines}"
+        f" index_bytes={status.index_bytes}"
+        f" pending={status.pending_updates}"
+        f" last_update={status.last_update_at or 'none'}"
+        f" last_error={error}"
+        f" warnings={warnings}"
+    )
+
+
+def _format_sessions(memory_manager: MemoryManager | None) -> str:
+    if memory_manager is None:
+        return "记忆系统未启用"
+    sessions = memory_manager.list_sessions()
+    if not sessions:
+        return "暂无会话存档"
+    lines = ["sessions:"]
+    for session in sessions[:20]:
+        warning_text = f" warnings={len(session.warnings)}" if session.warnings else ""
+        lines.append(
+            f"- {session.session_id} messages={session.message_count} updated={session.updated_at or 'unknown'}"
+            f" title={session.title}{warning_text}"
+        )
+    return "\n".join(lines)
+
+
+def _format_resume_report(report) -> str:
+    lines = [report.message]
+    if report.ok:
+        lines.append(
+            " ".join(
+                [
+                    f"restored={report.restored_messages}",
+                    f"bad_lines={report.skipped_bad_lines}",
+                    f"truncated={str(report.truncated).lower()}",
+                    f"time_gap={str(report.time_gap_inserted).lower()}",
+                    f"compacted={str(report.compacted).lower()}",
+                ]
+            )
+        )
+    for warning in report.warnings:
+        lines.append(f"warning: {warning}")
+    return "\n".join(lines)
 
 
 def _format_last_tool_results(state: AgentState, command: str) -> str:
@@ -355,6 +475,7 @@ def _run_request(
     config: LLMConfig,
     mode: AgentMode,
     show_usage: bool,
+    memory_manager: MemoryManager | None = None,
 ) -> None:
     options = AgentOptions(mode=mode)
     last_user_count = len(state.messages)
@@ -366,6 +487,7 @@ def _run_request(
         user_text=user_text,
         config=config,
         options=options,
+        memory=memory_manager,
     ):
         if event.kind == "thinking" and not config.thinking.show:
             continue

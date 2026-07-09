@@ -31,6 +31,10 @@ class ConfigTests(unittest.TestCase):
                         "  window_tokens: 64000",
                         "  auto_margin_tokens: 12000",
                         "  single_tool_result_tokens: 1500",
+                        "memory:",
+                        "  enabled: true",
+                        "  auto_update: false",
+                        "  index_max_lines: 120",
                     ]
                 ),
                 encoding="utf-8",
@@ -59,6 +63,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.context.window_tokens, 64000)
         self.assertEqual(config.context.auto_margin_tokens, 12000)
         self.assertEqual(config.context.single_tool_result_tokens, 1500)
+        self.assertTrue(config.memory.enabled)
+        self.assertFalse(config.memory.auto_update)
+        self.assertEqual(config.memory.index_max_lines, 120)
 
     def test_rejects_missing_core_field(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -130,6 +137,8 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(config.context.enabled)
             self.assertEqual(config.context.window_tokens, 128000)
             self.assertEqual(config.context.manual_margin_tokens, 3000)
+            self.assertTrue(config.memory.enabled)
+            self.assertTrue(config.memory.auto_update)
 
             path.write_text(
                 "\n".join(
@@ -161,6 +170,50 @@ class ConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ConfigError, "context.single_tool_result_tokens"):
+                load_config(path)
+
+    def test_memory_defaults_and_rejects_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            self.assertTrue(config.memory.enabled)
+            self.assertEqual(config.memory.session_retention_days, 30)
+            self.assertEqual(config.memory.index_max_bytes, 25 * 1024)
+
+            path.write_text(
+                "\n".join(
+                    [
+                        "protocol: openai",
+                        "model: test",
+                        "base_url: http://example.test",
+                        "api_key: key",
+                        "memory:",
+                        "  enabled: maybe",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "memory.enabled"):
+                load_config(path)
+
+            path.write_text(
+                "\n".join(
+                    [
+                        "protocol: openai",
+                        "model: test",
+                        "base_url: http://example.test",
+                        "api_key: key",
+                        "memory:",
+                        "  index_max_lines: 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "memory.index_max_lines"):
                 load_config(path)
 
     def test_rejects_context_thresholds_that_exceed_window(self) -> None:

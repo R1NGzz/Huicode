@@ -53,6 +53,8 @@ class PromptContext:
     custom_instructions: str = ""
     active_skills: tuple[str, ...] = ()
     long_term_memory: str = ""
+    memory_index: str = ""
+    memory_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

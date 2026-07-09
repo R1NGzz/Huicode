@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from huicode.context.state import ContextState
+from huicode.memory.types import MemoryRuntimeState
 from huicode.providers.base import ConversationMessage, ToolCall
 from huicode.tools.base import ToolResult
 
@@ -17,6 +18,7 @@ AgentEventKind = Literal[
     "progress",
     "usage",
     "context",
+    "memory",
     "error",
     "done",
 ]
@@ -58,6 +60,7 @@ class AgentState:
     messages: list[ConversationMessage] = field(default_factory=list)
     last_plan: str = ""
     context: ContextState = field(default_factory=ContextState)
+    memory: MemoryRuntimeState = field(default_factory=MemoryRuntimeState)
     cancel_requested: bool = False
     unknown_tool_count: int = 0
     iterations: int = 0

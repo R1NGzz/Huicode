@@ -154,6 +154,14 @@ def render_agent_event(event: AgentEvent, output: TextIO) -> None:
         _render_context_event(output, event.data)
         return
 
+    if event.kind == "memory":
+        _flush_markdown_buffer(output, state)
+        _close_inline_state(output, state)
+        message = event.data.get("message", event.text)
+        if message:
+            print(f"HuiCode> {message}", file=output)
+        return
+
     if event.kind == "error":
         _flush_markdown_buffer(output, state)
         _close_inline_state(output, state)

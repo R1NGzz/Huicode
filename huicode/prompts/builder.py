@@ -15,13 +15,46 @@ def build_prompt_bundle(
         long_term_memory=context.long_term_memory,
     )
     dynamic_modules = (_environment_module(context),)
-    supplemental_modules = (_mode_instruction_module(context, policy),)
+    supplemental_modules = (_mode_instruction_module(context, policy),) + _memory_modules(context)
     return PromptBundle(
         stable_modules=stable_modules,
         dynamic_modules=dynamic_modules,
         supplemental_modules=supplemental_modules,
         metadata={"mode": context.mode, "iteration": context.iteration},
     )
+
+
+def _memory_modules(context: PromptContext) -> tuple[PromptModule, ...]:
+    modules: list[PromptModule] = []
+    if context.memory_index.strip():
+        modules.append(
+            PromptModule(
+                name="memory_index",
+                content=(
+                    '<huicode_context type="memory_index" scope="long_term">\n'
+                    f"{context.memory_index.strip()}\n\n"
+                    "如果需要文件细节，请重新读取 source 指向的笔记或项目文件，不要只凭索引脑补。\n"
+                    "</huicode_context>"
+                ),
+                stable=False,
+                cacheable=False,
+            )
+        )
+    if context.memory_warnings:
+        warnings = "\n".join(f"- {warning}" for warning in context.memory_warnings)
+        modules.append(
+            PromptModule(
+                name="memory_warnings",
+                content=(
+                    '<huicode_context type="memory_warnings" scope="turn">\n'
+                    f"{warnings}\n"
+                    "</huicode_context>"
+                ),
+                stable=False,
+                cacheable=False,
+            )
+        )
+    return tuple(modules)
 
 
 def _environment_module(context: PromptContext) -> PromptModule:
