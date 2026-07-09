@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
+import time
 from dataclasses import dataclass
 from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
@@ -26,6 +28,8 @@ def post_sse(
     headers: dict[str, str],
     payload: dict[str, Any],
     timeout: int = 120,
+    max_retries: int = 1,
+    retry_delay_seconds: float = 0.5,
 ) -> Iterator[SSEEvent]:
     request = Request(
         url,
@@ -39,14 +43,24 @@ def post_sse(
         method="POST",
     )
 
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            yield from iter_sse_events(response)
-    except HTTPError as exc:
-        detail = _format_http_error_detail(exc.read().decode("utf-8", errors="replace"))
-        raise APIError(f"API 请求失败: HTTP {exc.code}: {detail}") from exc
-    except URLError as exc:
-        raise APIError(f"无法连接 API: {exc.reason}") from exc
+    for attempt in range(max_retries + 1):
+        try:
+            response = urlopen(request, timeout=timeout)
+        except HTTPError as exc:
+            detail = _format_http_error_detail(exc.read().decode("utf-8", errors="replace"))
+            raise APIError(f"API 请求失败: HTTP {exc.code}: {detail}") from exc
+        except (URLError, ssl.SSLError, TimeoutError, OSError) as exc:
+            if attempt < max_retries:
+                time.sleep(retry_delay_seconds)
+                continue
+            raise APIError(f"无法连接 API: {_format_connection_error(exc)}") from exc
+
+        try:
+            with response:
+                yield from iter_sse_events(response)
+            return
+        except (URLError, ssl.SSLError, TimeoutError, OSError) as exc:
+            raise APIError(f"API 流式连接中断: {_format_connection_error(exc)}") from exc
 
 
 def iter_sse_events(lines: Any) -> Iterator[SSEEvent]:
@@ -94,6 +108,14 @@ def _format_http_error_detail(detail: str, limit: int = 600) -> str:
         text = title or plain
     if len(text) > limit:
         return text[:limit].rstrip() + "..."
+    return text
+
+
+def _format_connection_error(exc: BaseException) -> str:
+    reason = exc.reason if isinstance(exc, URLError) else exc
+    text = str(reason)
+    if "UNEXPECTED_EOF_WHILE_READING" in text or "EOF occurred in violation of protocol" in text:
+        return f"TLS 连接被提前关闭，通常是网络、代理或上游网关临时断开: {text}"
     return text
 
 

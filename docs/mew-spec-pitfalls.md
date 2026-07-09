@@ -348,6 +348,35 @@ MCP Client 章节实现后，HuiCode 只读取 `~/.huicode/mcp.yaml` 和项目�
 - 合并优先级要写成一条可测试规则，而不是只在文档里解释。
 - 主配置解析器能力要跟示例同步，示例里出现深层 map/list 时必须有解析测试。
 
+## 踩坑 14：TLS EOF 这类连接错误不能只丢给用户一串底层异常
+
+现象：
+
+DeepSeek Anthropic 兼容接口请求前，TUI 只显示：
+
+```text
+请求错误: 无法连接 API: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol
+```
+
+配置本身是 `protocol: anthropic` 与 `base_url: https://api.deepseek.com/anthropic`，属于 DeepSeek 官方兼容接口形态；这个错误发生在 TLS/连接层，还没到 HTTP 状态码和 JSON 错误阶段。
+
+根因：
+
+SSE 客户端只把 `urllib` 的连接异常原样包成“无法连接 API”，没有区分 TLS EOF、连接重置、HTTP 错误、流式中途断开，也没有对“请求尚未开始接收响应”的短暂断连做重试。
+
+后来补救：
+
+- `post_sse()` 在打开连接阶段遇到 TLS EOF/连接错误时默认重试一次。
+- 一旦已经开始收到 SSE 数据，不自动重放请求，避免流式回答或工具调用重复。
+- TLS EOF 的错误文案改成“TLS 连接被提前关闭，通常是网络、代理或上游网关临时断开”。
+- `tests.test_sse` 覆盖连接前重试成功和重试耗尽后的友好错误文案。
+
+以后写 spec 要补：
+
+- Provider/SSE 章节要区分 HTTP 错误、连接前失败、流式中途失败三类错误。
+- 只允许对“尚未收到响应”的连接失败自动重试；已开始流式输出后不能静默重放请求。
+- 用户可见错误要给出排查方向，不要只暴露 Python/SSL 底层异常。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -366,6 +395,7 @@ MCP Client 章节实现后，HuiCode 只读取 `~/.huicode/mcp.yaml` 和项目�
 12. 外部集成是否至少跑过一个真实第三方服务或本地真实启动命令，而不只靠 fake server？
 13. Windows 下 `subprocess` 能否直接找到配置里的 `command`？
 14. 新增配置是否既支持主配置入口，又说明与用户级/项目级文件的覆盖优先级？
+15. 网络/Provider 错误是否区分连接前失败、HTTP 错误和流式中途断开，并有清楚文案？
 
 ## 维护约定
 
