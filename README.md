@@ -46,14 +46,14 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 
 HuiCode 启动时会读取 MCP 配置，初始化外部 MCP Server，并把远端工具包装成普通 HuiCode 工具注册到工具中心。模型使用时不需要区分本地工具和 MCP 工具。
 
-MCP 配置文件分两层：
+MCP 可以直接写在主配置 `huicode.yaml` 的 `mcp` 字段里，也可以继续使用独立配置文件。独立文件分两层：
 
 ```text
 用户级：~/.huicode/mcp.yaml
 项目级：<workspace>/.huicode-mcp.yaml
 ```
 
-两层配置都使用顶层 `mcp` 映射。每个 key 是 server 名称；同名 server 由项目级覆盖用户级，不同名 server 会合并。`env` 和 `headers` 的值支持 `${VAR}` 环境变量展开，变量未定义会作为配置错误处理。`/config` 只显示 server 和工具数量，不会打印 env 或 header 的具体值。
+三处配置都使用顶层 `mcp` 映射。每个 key 是 server 名称；同名 server 按“用户级默认 < `huicode.yaml` < 项目级覆盖”的顺序合并，不同名 server 会合并。`env` 和 `headers` 的值支持 `${VAR}` 环境变量展开，变量未定义会作为配置错误处理。`/config` 只显示 server 和工具数量，不会打印 env 或 header 的具体值。
 
 stdio server 示例：
 
@@ -77,6 +77,22 @@ mcp:
     url: ${MCP_URL}
     headers:
       Authorization: Bearer ${MCP_TOKEN}
+```
+
+写在 `huicode.yaml` 里的 Context7 示例：
+
+```yaml
+protocol: anthropic
+model: claude-sonnet-4-5
+base_url: https://api.anthropic.com/v1
+api_key: sk-ant-...
+mcp:
+  context7:
+    type: stdio
+    command: npx.cmd
+    args:
+      - "-y"
+      - "@upstash/context7-mcp"
 ```
 
 远端工具会以稳定公开名称注册：

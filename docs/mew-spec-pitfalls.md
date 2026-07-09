@@ -324,6 +324,30 @@ mcp__context7__query_docs
 - 对全量工具断言，优先检查必需能力、别名和模式过滤结果，不要默认工具列表永远固定。
 - checklist 里要补一句：新增外部能力后，回归测试需复核是否把动态集合写成了静态常量。
 
+## 踩坑 13：主配置入口不支持 MCP 内联，用户会自然找错地方
+
+现象：
+
+MCP Client 章节实现后，HuiCode 只读取 `~/.huicode/mcp.yaml` 和项目根目录 `.huicode-mcp.yaml`。用户自然会问：既然模型、thinking、context 都写在 `huicode.yaml`，为什么 MCP 不能也写在主配置里？这说明配置入口虽然“分层合理”，但缺少一个直观的主入口。
+
+根因：
+
+008 MCP Client 的 spec 把“用户级、项目级两层合并”写得很清楚，却没有把 `huicode.yaml` 作为产品主配置入口纳入设计。与此同时，`huicode.yaml` 自己的解析器只支持一层嵌套，就算把 `mcp.context7.args` 写进去，也会在主配置解析阶段失败。
+
+后来补救：
+
+- `LLMConfig` 增加 `mcp` 原样映射，`huicode.yaml` 解析器支持深层 map/list。
+- MCP loader 增加中间层 `inline_mcp`。
+- 合并优先级固定为：用户级默认 < `huicode.yaml` < 项目级覆盖。
+- README 增加 `huicode.yaml` 内联 Context7 示例。
+- 测试覆盖主配置解析、三层覆盖顺序和 CLI 内联 MCP 工具注册。
+
+以后写 spec 要补：
+
+- 配置类能力要明确“主配置入口是否支持”，不要只设计旁路配置文件。
+- 合并优先级要写成一条可测试规则，而不是只在文档里解释。
+- 主配置解析器能力要跟示例同步，示例里出现深层 map/list 时必须有解析测试。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -341,6 +365,7 @@ mcp__context7__query_docs
 11. 配置类能力是否同时验证了路径、顶层 key、字段类型、环境变量展开和 secret 不泄露？
 12. 外部集成是否至少跑过一个真实第三方服务或本地真实启动命令，而不只靠 fake server？
 13. Windows 下 `subprocess` 能否直接找到配置里的 `command`？
+14. 新增配置是否既支持主配置入口，又说明与用户级/项目级文件的覆盖优先级？
 
 ## 维护约定
 

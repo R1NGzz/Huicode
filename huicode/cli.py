@@ -76,7 +76,7 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
     registry = create_default_registry(workspace)
     mcp_manager: MCPManager | None = None
     try:
-        mcp_config = load_mcp_config(mcp_config_paths(workspace))
+        mcp_config = load_mcp_config(mcp_config_paths(workspace), inline_mcp=config.mcp)
         mcp_manager = MCPManager(mcp_config, transport_factory=mcp_transport_factory or create_transport)
         mcp_manager.start(registry)
     except MCPConfigError as exc:

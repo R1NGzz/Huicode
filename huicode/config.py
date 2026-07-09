@@ -38,6 +38,7 @@ class LLMConfig:
     context: ContextConfig = field(default_factory=ContextConfig)
     headers: dict[str, str] = field(default_factory=dict)
     show_usage: bool = False
+    mcp: dict[str, Any] = field(default_factory=dict)
 
 
 class ConfigError(ValueError):
@@ -72,12 +73,19 @@ def load_config(path: str | Path) -> LLMConfig:
     if not isinstance(headers_raw, dict):
         raise ConfigError("配置字段 headers 必须是 YAML 映射")
 
+    mcp_raw = values.get("mcp", {})
+    if mcp_raw is None:
+        mcp_raw = {}
+    if not isinstance(mcp_raw, dict):
+        raise ConfigError("配置字段 mcp 必须是 YAML 映射")
+
     return LLMConfig(
         protocol=protocol,
         model=str(values["model"]).strip(),
         base_url=str(values["base_url"]).strip().rstrip("/"),
         api_key=str(values["api_key"]).strip(),
         headers=_as_string_map(headers_raw, "headers"),
+        mcp=mcp_raw,
         max_tokens=_as_int(values.get("max_tokens", 2048), "max_tokens"),
         temperature=_as_optional_float(values.get("temperature"), "temperature"),
         show_usage=_as_bool(values.get("show_usage", False), "show_usage"),
@@ -120,34 +128,83 @@ def load_config(path: str | Path) -> LLMConfig:
 
 
 def _parse_minimal_yaml(text: str) -> dict[str, Any]:
-    root: dict[str, Any] = {}
-    current_map: dict[str, Any] | None = None
-
-    for line_no, original in enumerate(text.splitlines(), start=1):
-        line = _strip_comment(original).rstrip()
-        if not line.strip():
-            continue
-
-        indent = len(line) - len(line.lstrip(" "))
-        if indent not in (0, 2):
-            raise ConfigError(f"第 {line_no} 行缩进不支持，请使用 0 或 2 个空格")
-
-        key, value = _split_pair(line.strip(), line_no)
-        if indent == 0:
-            if value == "":
-                current_map = {}
-                root[key] = current_map
-            else:
-                current_map = None
-                root[key] = _parse_scalar(value)
-        else:
-            if current_map is None:
-                raise ConfigError(f"第 {line_no} 行存在没有父级的嵌套字段")
-            if value == "":
-                raise ConfigError(f"第 {line_no} 行不支持超过一层的嵌套映射")
-            current_map[key] = _parse_scalar(value)
-
+    lines = [
+        (line_no, line)
+        for line_no, original in enumerate(text.splitlines(), start=1)
+        if (line := _strip_comment(original).rstrip()).strip()
+    ]
+    if not lines:
+        return {}
+    root, index = _parse_block(lines, 0, _indent(lines[0][1]))
+    if index != len(lines):
+        line_no, _ = lines[index]
+        raise ConfigError(f"第 {line_no} 行无法解析")
+    if not isinstance(root, dict):
+        raise ConfigError("配置根节点必须是映射")
     return root
+
+
+def _parse_block(lines: list[tuple[int, str]], index: int, indent: int) -> tuple[Any, int]:
+    if index >= len(lines):
+        return {}, index
+    _, line = lines[index]
+    if line.strip().startswith("- "):
+        return _parse_list(lines, index, indent)
+    return _parse_map(lines, index, indent)
+
+
+def _parse_map(lines: list[tuple[int, str]], index: int, indent: int) -> tuple[dict[str, Any], int]:
+    result: dict[str, Any] = {}
+    while index < len(lines):
+        line_no, line = lines[index]
+        current_indent = _indent(line)
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            raise ConfigError(f"第 {line_no} 行缩进不匹配")
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            break
+        key, value = _split_pair(stripped, line_no)
+        if value == "":
+            next_index = index + 1
+            if next_index >= len(lines) or _indent(lines[next_index][1]) <= indent:
+                result[key] = {}
+                index = next_index
+                continue
+            child, index = _parse_block(lines, next_index, _indent(lines[next_index][1]))
+            result[key] = child
+        else:
+            result[key] = _parse_scalar(value)
+            index += 1
+    return result, index
+
+
+def _parse_list(lines: list[tuple[int, str]], index: int, indent: int) -> tuple[list[Any], int]:
+    result: list[Any] = []
+    while index < len(lines):
+        line_no, line = lines[index]
+        current_indent = _indent(line)
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            raise ConfigError(f"第 {line_no} 行缩进不匹配")
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            break
+        value = stripped[2:].strip()
+        if value == "":
+            next_index = index + 1
+            if next_index >= len(lines) or _indent(lines[next_index][1]) <= indent:
+                result.append(None)
+                index = next_index
+                continue
+            child, index = _parse_block(lines, next_index, _indent(lines[next_index][1]))
+            result.append(child)
+        else:
+            result.append(_parse_scalar(value))
+            index += 1
+    return result, index
 
 
 def _strip_comment(line: str) -> str:
@@ -179,6 +236,10 @@ def _split_pair(line: str, line_no: int) -> tuple[str, str]:
     if not key:
         raise ConfigError(f"第 {line_no} 行缺少配置键")
     return key, value.strip()
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
 
 
 def _parse_scalar(value: str) -> Any:

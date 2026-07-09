@@ -273,6 +273,54 @@ class CLITests(unittest.TestCase):
         self.assertIn("mcp__fake__echo", provider.tool_names)
         self.assertTrue(FakeMCPTransport.instances[0].closed)
 
+    def test_inline_mcp_config_is_registered(self) -> None:
+        class ToolRecordingProvider(FakeProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.tool_names = []
+
+            def stream_chat(self, messages: list[ConversationMessage], tools=None, allow_tool_calls=True, prompt=None):
+                self.calls.append(list(messages))
+                self.tool_names = [tool.name for tool in tools or []]
+                yield StreamEvent(kind="text", text="ok")
+
+        provider = ToolRecordingProvider()
+        config = LLMConfig(
+            "openai",
+            "fake-model",
+            "https://example.test/v1",
+            "secret-api-key",
+            mcp={
+                "inline": {
+                    "type": "stdio",
+                    "command": "ignored",
+                    "env": {"TOKEN": "inline-secret"},
+                }
+            },
+        )
+        output = io.StringIO()
+        old_cwd = Path.cwd()
+        FakeMCPTransport.instances = []
+        with tempfile.TemporaryDirectory() as directory:
+            os.chdir(directory)
+            try:
+                with patch("builtins.input", side_effect=["/config", "hello", "/exit"]), redirect_stdout(output):
+                    exit_code = _run_chat(
+                        provider,
+                        config,
+                        mcp_transport_factory=lambda server: FakeMCPTransport(server.name),
+                    )
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("mcp_servers=1/1", text)
+        self.assertIn("mcp_tools=1", text)
+        self.assertNotIn("inline-secret", text)
+        self.assertIn("mcp__inline__echo", provider.tool_names)
+        self.assertTrue(FakeMCPTransport.instances[0].closed)
+
     def test_permission_confirmation_can_deny_bash(self) -> None:
         class BashProvider(FakeProvider):
             def __init__(self) -> None:

@@ -163,6 +163,37 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "context.single_tool_result_tokens"):
                 load_config(path)
 
+    def test_loads_inline_mcp_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "\n".join(
+                    [
+                        "protocol: openai",
+                        "model: test",
+                        "base_url: http://example.test",
+                        "api_key: key",
+                        "mcp:",
+                        "  context7:",
+                        "    type: stdio",
+                        "    command: npx.cmd",
+                        "    args:",
+                        "      - -y",
+                        "      - '@upstash/context7-mcp'",
+                        "    env:",
+                        "      NODE_ENV: production",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.mcp["context7"]["type"], "stdio")
+        self.assertEqual(config.mcp["context7"]["command"], "npx.cmd")
+        self.assertEqual(config.mcp["context7"]["args"], ["-y", "@upstash/context7-mcp"])
+        self.assertEqual(config.mcp["context7"]["env"]["NODE_ENV"], "production")
+
 
 if __name__ == "__main__":
     unittest.main()

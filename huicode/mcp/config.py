@@ -53,11 +53,16 @@ def mcp_config_paths(workspace: Path) -> MCPConfigPaths:
     )
 
 
-def load_mcp_config(paths: MCPConfigPaths, environ: dict[str, str] | None = None) -> MCPConfig:
+def load_mcp_config(
+    paths: MCPConfigPaths,
+    environ: dict[str, str] | None = None,
+    inline_mcp: dict[str, Any] | None = None,
+) -> MCPConfig:
     env = os.environ if environ is None else environ
     loaded: list[dict[str, MCPServerConfig]] = []
-    for path, source in ((paths.user, "user"), (paths.project, "project")):
-        loaded.append(_load_one(path, source, env))
+    loaded.append(_load_one(paths.user, "user", env))
+    loaded.append(_parse_servers(inline_mcp or {}, "config", env, "huicode.yaml"))
+    loaded.append(_load_one(paths.project, "project", env))
 
     servers: dict[str, MCPServerConfig] = {}
     for server_map in loaded:
@@ -79,11 +84,20 @@ def _load_one(path: Path, source: str, environ: dict[str, str]) -> dict[str, MCP
     if not isinstance(mcp, dict):
         raise MCPConfigError(f"MCP 配置 {path} 的 mcp 必须是映射")
 
+    return _parse_servers(mcp, source, environ, str(path))
+
+
+def _parse_servers(
+    mcp: dict[str, Any],
+    source: str,
+    environ: dict[str, str],
+    source_label: str,
+) -> dict[str, MCPServerConfig]:
     servers: dict[str, MCPServerConfig] = {}
     for raw_name, raw_config in mcp.items():
         name = str(raw_name).strip()
         if not name:
-            raise MCPConfigError(f"MCP 配置 {path} 包含空 server 名称")
+            raise MCPConfigError(f"MCP 配置 {source_label} 包含空 server 名称")
         if not isinstance(raw_config, dict):
             raise MCPConfigError(f"MCP server {name} 必须是映射")
         servers[name] = _parse_server(name, raw_config, source, environ)

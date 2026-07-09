@@ -71,6 +71,50 @@ class MCPConfigTests(unittest.TestCase):
         self.assertEqual(config.servers["shared"].source, "project")
         self.assertEqual(config.servers["only_user"].source, "user")
 
+    def test_inline_config_overrides_user_and_project_overrides_inline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.yaml"
+            project = root / "project.yaml"
+            user.write_text(
+                "mcp:\n  shared:\n    type: http\n    url: http://user/mcp\n  only_user:\n    type: stdio\n    command: user\n",
+                encoding="utf-8",
+            )
+            project.write_text(
+                "mcp:\n  shared:\n    type: http\n    url: http://project/mcp\n  only_project:\n    type: stdio\n    command: project\n",
+                encoding="utf-8",
+            )
+
+            config = load_mcp_config(
+                MCPConfigPaths(user, project),
+                environ={},
+                inline_mcp={
+                    "shared": {"type": "http", "url": "http://config/mcp"},
+                    "only_config": {"type": "stdio", "command": "config"},
+                },
+            )
+
+        self.assertEqual(set(config.servers), {"shared", "only_user", "only_config", "only_project"})
+        self.assertEqual(config.servers["shared"].url, "http://project/mcp")
+        self.assertEqual(config.servers["shared"].source, "project")
+        self.assertEqual(config.servers["only_config"].source, "config")
+        self.assertEqual(config.servers["only_user"].source, "user")
+
+    def test_inline_config_overrides_user_when_project_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = root / "user.yaml"
+            user.write_text("mcp:\n  shared:\n    type: http\n    url: http://user/mcp\n", encoding="utf-8")
+
+            config = load_mcp_config(
+                MCPConfigPaths(user, root / "missing.yaml"),
+                environ={},
+                inline_mcp={"shared": {"type": "http", "url": "http://config/mcp"}},
+            )
+
+        self.assertEqual(config.servers["shared"].url, "http://config/mcp")
+        self.assertEqual(config.servers["shared"].source, "config")
+
     def test_missing_variable_and_required_fields_are_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
