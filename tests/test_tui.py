@@ -182,6 +182,36 @@ class TUITests(unittest.TestCase):
         self.assertIn("[a]lways", text)
         self.assertIn("enter=deny", text)
 
+    def test_context_events_render(self) -> None:
+        output = io.StringIO()
+        render_agent_event(
+            AgentEvent(
+                kind="context",
+                data={"kind": "lightweight", "spilled_count": 2, "tokens_freed": 5300, "paths": ["a.json"]},
+            ),
+            output,
+        )
+        render_agent_event(
+            AgentEvent(
+                kind="context",
+                data={"kind": "summary", "tokens_before": 42000, "tokens_after": 18000},
+            ),
+            output,
+        )
+        render_agent_event(
+            AgentEvent(
+                kind="context",
+                data={"kind": "failure", "message": "摘要没有返回正式 summary"},
+            ),
+            output,
+        )
+
+        rendered = output.getvalue()
+        self.assertIn("上下文整理", rendered)
+        self.assertIn("spilled 2 tool result(s)", rendered)
+        self.assertIn("summary created", rendered)
+        self.assertIn("上下文压缩失败", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

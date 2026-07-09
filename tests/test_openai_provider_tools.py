@@ -58,6 +58,25 @@ class OpenAIProviderToolTests(unittest.TestCase):
         self.assertEqual(chunks[0].kind, "usage")
         self.assertEqual(chunks[0].usage["prompt_tokens"], 11)
 
+    def test_serializes_summary_and_boundary_messages_before_tool_history(self) -> None:
+        config = LLMConfig("openai", "gpt-test", "https://api.openai.com/v1", "key")
+        call = ToolCall(id="call_1", name="Read", arguments={"path": "README.md"}, raw_arguments='{"path":"README.md"}')
+        messages = [
+            ConversationMessage("user", '<huicode_context type="conversation_summary">summary</huicode_context>'),
+            ConversationMessage("user", '<huicode_context type="compression_boundary">boundary</huicode_context>'),
+            ConversationMessage("assistant", "", tool_calls=[call]),
+            ConversationMessage("tool", "", tool_call_id="call_1", tool_name="Read", tool_result=ToolResult.success({"content": "hi"}, "ok")),
+        ]
+
+        with patch("huicode.providers.openai.post_sse", return_value=iter([SSEEvent(None, "[DONE]")])) as mock_post:
+            list(OpenAIProvider(config).stream_chat(messages, tools=[], allow_tool_calls=False))
+
+        payload = mock_post.call_args.kwargs["payload"]
+        self.assertIn("conversation_summary", payload["messages"][0]["content"])
+        self.assertIn("compression_boundary", payload["messages"][1]["content"])
+        self.assertEqual(payload["messages"][2]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(payload["messages"][3]["role"], "tool")
+
 
 if __name__ == "__main__":
     unittest.main()

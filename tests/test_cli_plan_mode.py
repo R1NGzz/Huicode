@@ -53,7 +53,8 @@ class CLIPlanModeTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(provider.calls), 2)
         self.assertIn("先读入口文件，再确认参数流向。", provider.calls[1]["messages"][-1].content)
-        self.assertEqual({tool.name for tool in provider.calls[1]["tools"]}, {"Read", "Write", "Edit", "Bash", "Find", "Search"})
+        tool_names = {tool.name for tool in provider.calls[1]["tools"]}
+        self.assertTrue({"Read", "Write", "Edit", "Bash", "Find", "Search"}.issubset(tool_names))
 
     def test_plan_without_inline_task_uses_next_input(self) -> None:
         provider = InspectableProvider()

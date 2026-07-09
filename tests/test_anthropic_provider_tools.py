@@ -137,6 +137,25 @@ class AnthropicProviderToolTests(unittest.TestCase):
         self.assertEqual(chunks[0].kind, "usage")
         self.assertEqual(chunks[0].usage["input_tokens"], 9)
 
+    def test_serializes_summary_and_boundary_messages_without_breaking_tool_results(self) -> None:
+        config = LLMConfig("anthropic", "claude-test", "https://api.anthropic.com/v1", "key")
+        call = ToolCall(id="toolu_1", name="Read", arguments={"path": "README.md"}, raw_arguments='{"path":"README.md"}')
+        messages = [
+            ConversationMessage("user", '<huicode_context type="conversation_summary">summary</huicode_context>'),
+            ConversationMessage("user", '<huicode_context type="compression_boundary">boundary</huicode_context>'),
+            ConversationMessage("assistant", "", tool_calls=[call]),
+            ConversationMessage("tool", "", tool_call_id="toolu_1", tool_name="Read", tool_result=ToolResult.success({"content": "hi"}, "ok")),
+        ]
+
+        with patch("huicode.providers.anthropic.post_sse", return_value=iter([SSEEvent("message_stop", '{"type":"message_stop"}')])) as mock_post:
+            list(AnthropicProvider(config).stream_chat(messages, tools=[], allow_tool_calls=False))
+
+        payload = mock_post.call_args.kwargs["payload"]
+        self.assertIn("conversation_summary", payload["messages"][0]["content"])
+        self.assertIn("compression_boundary", payload["messages"][1]["content"])
+        self.assertEqual(payload["messages"][2]["content"][0]["id"], "toolu_1")
+        self.assertEqual(payload["messages"][3]["content"][0]["tool_use_id"], "toolu_1")
+
 
 if __name__ == "__main__":
     unittest.main()

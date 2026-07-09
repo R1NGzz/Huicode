@@ -26,6 +26,11 @@ class ConfigTests(unittest.TestCase):
                         "  enabled: true",
                         "  budget_tokens: 1024",
                         "  show: true",
+                        "context:",
+                        "  enabled: true",
+                        "  window_tokens: 64000",
+                        "  auto_margin_tokens: 12000",
+                        "  single_tool_result_tokens: 1500",
                     ]
                 ),
                 encoding="utf-8",
@@ -50,6 +55,10 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.thinking.enabled)
         self.assertEqual(config.thinking.budget_tokens, 1024)
         self.assertTrue(config.thinking.show)
+        self.assertTrue(config.context.enabled)
+        self.assertEqual(config.context.window_tokens, 64000)
+        self.assertEqual(config.context.auto_margin_tokens, 12000)
+        self.assertEqual(config.context.single_tool_result_tokens, 1500)
 
     def test_rejects_missing_core_field(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -106,6 +115,52 @@ class ConfigTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ConfigError, "headers"):
+                load_config(path)
+
+    def test_context_defaults_and_rejects_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertTrue(config.context.enabled)
+            self.assertEqual(config.context.window_tokens, 128000)
+            self.assertEqual(config.context.manual_margin_tokens, 3000)
+
+            path.write_text(
+                "\n".join(
+                    [
+                        "protocol: openai",
+                        "model: test",
+                        "base_url: http://example.test",
+                        "api_key: key",
+                        "context:",
+                        "  enabled: maybe",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "context.enabled"):
+                load_config(path)
+
+            path.write_text(
+                "\n".join(
+                    [
+                        "protocol: openai",
+                        "model: test",
+                        "base_url: http://example.test",
+                        "api_key: key",
+                        "context:",
+                        "  single_tool_result_tokens: 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "context.single_tool_result_tokens"):
                 load_config(path)
 
 

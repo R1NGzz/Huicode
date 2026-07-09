@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 
 from huicode.agent import run_agent_loop
-from huicode.agent_events import AgentMode, AgentOptions, AgentState
+from huicode.agent_events import AgentEvent, AgentMode, AgentOptions, AgentState
 from huicode.config import ConfigError, LLMConfig, load_config
+from huicode.context import ContextManager
 from huicode.mcp import MCPConfigError, MCPManager, load_mcp_config, mcp_config_paths
 from huicode.mcp.transport import create_transport
 from huicode.permissions import (
@@ -45,6 +46,8 @@ COMMANDS = [
     "/last",
     "/permissions",
     "/perm",
+    "/compact",
+    "/context",
 ]
 
 
@@ -97,6 +100,7 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
     )
     tool_context = ToolContext(workspace=workspace, permissions=permission_context)
     state = AgentState()
+    context_manager = ContextManager(workspace, config.context)
     current_mode: AgentMode = "chat"
     show_usage = config.show_usage
     if mcp_manager is not None and mcp_manager.server_count:
@@ -131,11 +135,26 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
             state.cancel_requested = False
             state.unknown_tool_count = 0
             state.iterations = 0
+            context_manager.reset(state)
             current_mode = "chat"
             print("本次会话记忆和计划状态已清空。")
             continue
         if command == "/config":
-            print(_format_config_summary(provider, config, show_usage, mcp_manager))
+            print(_format_config_summary(provider, config, state, show_usage, mcp_manager))
+            continue
+        if command == "/context":
+            print(_format_context_summary(config, state))
+            continue
+        if command == "/compact":
+            report = context_manager.manual_compact(
+                provider=provider,
+                state=state,
+                context=tool_context,
+                config=config,
+                prompt=None,
+                tools=[],
+            )
+            render_agent_event(AgentEvent(kind="context", data=report.to_dict()), sys.stdout)
             continue
         if command == "/verbose":
             show_usage = not show_usage
@@ -231,6 +250,7 @@ class ConsolePermissionConfirmer:
 def _format_config_summary(
     provider: Provider,
     config: LLMConfig,
+    state: AgentState,
     show_usage: bool | None = None,
     mcp_manager: MCPManager | None = None,
 ) -> str:
@@ -239,6 +259,11 @@ def _format_config_summary(
         summary += f" headers={','.join(sorted(config.headers))}"
     if show_usage is not None:
         summary += f" show_usage={str(show_usage).lower()}"
+    summary += (
+        f" context_window={config.context.window_tokens}"
+        f" context_summary_count={state.context.summary_count}"
+        f" context_fuse={str(state.context.summary_fuse_open).lower()}"
+    )
     if mcp_manager is not None:
         summary += (
             f" mcp_servers={mcp_manager.active_server_count}/{mcp_manager.server_count}"
@@ -265,6 +290,20 @@ def _format_permission_summary(context: PermissionContext) -> str:
         sources[rule.source] = sources.get(rule.source, 0) + 1
     source_text = ", ".join(f"{source}={count}" for source, count in sorted(sources.items())) or "none"
     return f"permissions mode={context.mode} rules={len(context.session_rules) + len(context.rules)} sources={source_text}"
+
+
+def _format_context_summary(config: LLMConfig, state: AgentState) -> str:
+    return (
+        f"context enabled={str(config.context.enabled).lower()}"
+        f" window={config.context.window_tokens}"
+        f" auto_margin={config.context.auto_margin_tokens}"
+        f" manual_margin={config.context.manual_margin_tokens}"
+        f" last_input_tokens={state.context.last_input_tokens}"
+        f" last_estimated_request_tokens={state.context.last_estimated_request_tokens}"
+        f" summary_count={state.context.summary_count}"
+        f" failure_count={state.context.summary_failure_count}"
+        f" fuse={str(state.context.summary_fuse_open).lower()}"
+    )
 
 
 def _format_last_tool_results(state: AgentState, command: str) -> str:

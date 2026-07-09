@@ -149,6 +149,12 @@ def render_agent_event(event: AgentEvent, output: TextIO) -> None:
             print(f"  tokens: {_summarize_usage(usage)}", file=output)
         return
 
+    if event.kind == "context":
+        _flush_markdown_buffer(output, state)
+        _close_inline_state(output, state)
+        _render_context_event(output, event.data)
+        return
+
     if event.kind == "error":
         _flush_markdown_buffer(output, state)
         _close_inline_state(output, state)
@@ -407,3 +413,32 @@ def _print_spill_notice(output: TextIO, result: ToolResult) -> None:
     freed = spill.get("chars_freed", 0)
     path = spill.get("path", "")
     print(f"  ◦ spilled 1 tool result(s) to disk (~{freed} chars freed): {path}", file=output)
+
+
+def _render_context_event(output: TextIO, data: dict[str, Any]) -> None:
+    kind = str(data.get("kind", "skip"))
+    if kind == "lightweight":
+        print("HuiCode> 上下文整理...", file=output)
+        detail = f"  ◦ spilled {data.get('spilled_count', 0)} tool result(s) to disk"
+        if data.get("tokens_freed"):
+            detail += f" (~{data.get('tokens_freed')} tokens freed)"
+        paths = data.get("paths") or []
+        if paths:
+            detail += f": {', '.join(str(path) for path in paths[:2])}"
+        print(detail, file=output)
+        return
+    if kind == "summary":
+        print("HuiCode> 上下文整理...", file=output)
+        print(
+            f"  ◦ summary created (~{data.get('tokens_before', 0)} -> {data.get('tokens_after', 0)} tokens)",
+            file=output,
+        )
+        return
+    if kind == "failure":
+        print(f"HuiCode> 上下文压缩失败: {data.get('message', '')}", file=output)
+        return
+    if kind == "fuse":
+        print(f"HuiCode> {data.get('message', '上下文摘要已熔断')}", file=output)
+        return
+    if kind == "skip":
+        print(f"HuiCode> 上下文压缩跳过: {data.get('message', '')}", file=output)

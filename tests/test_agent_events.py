@@ -15,6 +15,8 @@ class AgentEventTests(unittest.TestCase):
         self.assertEqual(options.read_only_tool_names, frozenset({"Read", "Find", "Search", "Glob"}))
         self.assertEqual(state.messages, [])
         self.assertEqual(state.last_plan, "")
+        self.assertIsNone(state.context.last_input_tokens)
+        self.assertFalse(state.context.summary_fuse_open)
         self.assertFalse(state.cancel_requested)
         self.assertEqual(state.unknown_tool_count, 0)
         self.assertEqual(state.iterations, 0)

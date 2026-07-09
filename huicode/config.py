@@ -13,6 +13,20 @@ class ThinkingConfig:
 
 
 @dataclass(frozen=True)
+class ContextConfig:
+    enabled: bool = True
+    window_tokens: int = 128000
+    auto_margin_tokens: int = 13000
+    manual_margin_tokens: int = 3000
+    recent_keep_tokens: int = 10000
+    min_recent_messages: int = 5
+    single_tool_result_tokens: int = 1000
+    tool_result_group_tokens: int = 6000
+    preview_chars: int = 1200
+    max_summary_failures: int = 3
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     protocol: str
     model: str
@@ -21,6 +35,7 @@ class LLMConfig:
     max_tokens: int = 2048
     temperature: float | None = None
     thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
     headers: dict[str, str] = field(default_factory=dict)
     show_usage: bool = False
 
@@ -45,6 +60,12 @@ def load_config(path: str | Path) -> LLMConfig:
     if not isinstance(thinking_raw, dict):
         raise ConfigError("配置字段 thinking 必须是 YAML 映射")
 
+    context_raw = values.get("context", {})
+    if context_raw is None:
+        context_raw = {}
+    if not isinstance(context_raw, dict):
+        raise ConfigError("配置字段 context 必须是 YAML 映射")
+
     headers_raw = values.get("headers", {})
     if headers_raw is None:
         headers_raw = {}
@@ -64,6 +85,36 @@ def load_config(path: str | Path) -> LLMConfig:
             enabled=_as_bool(thinking_raw.get("enabled", False), "thinking.enabled"),
             budget_tokens=_as_int(thinking_raw.get("budget_tokens", 1024), "thinking.budget_tokens"),
             show=_as_bool(thinking_raw.get("show", False), "thinking.show"),
+        ),
+        context=ContextConfig(
+            enabled=_as_bool(context_raw.get("enabled", True), "context.enabled"),
+            window_tokens=_as_int(context_raw.get("window_tokens", 128000), "context.window_tokens"),
+            auto_margin_tokens=_as_int(context_raw.get("auto_margin_tokens", 13000), "context.auto_margin_tokens"),
+            manual_margin_tokens=_as_int(
+                context_raw.get("manual_margin_tokens", 3000),
+                "context.manual_margin_tokens",
+            ),
+            recent_keep_tokens=_as_int(
+                context_raw.get("recent_keep_tokens", 10000),
+                "context.recent_keep_tokens",
+            ),
+            min_recent_messages=_as_int(
+                context_raw.get("min_recent_messages", 5),
+                "context.min_recent_messages",
+            ),
+            single_tool_result_tokens=_as_int(
+                context_raw.get("single_tool_result_tokens", 1000),
+                "context.single_tool_result_tokens",
+            ),
+            tool_result_group_tokens=_as_int(
+                context_raw.get("tool_result_group_tokens", 6000),
+                "context.tool_result_group_tokens",
+            ),
+            preview_chars=_as_int(context_raw.get("preview_chars", 1200), "context.preview_chars"),
+            max_summary_failures=_as_int(
+                context_raw.get("max_summary_failures", 3),
+                "context.max_summary_failures",
+            ),
         ),
     )
 

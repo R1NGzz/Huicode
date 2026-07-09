@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, TextIO
 
+from huicode.context import ContextManager, TokenEstimate
 from huicode.agent_events import AgentEvent, AgentOptions, AgentState, CollectedResponse, ToolBatch
 from huicode.config import LLMConfig
 from huicode.prompts import PromptBundle, PromptContext, build_prompt_bundle, enhance_tool_specs, normalize_cache_usage
@@ -19,9 +20,6 @@ from huicode.tools.base import ToolContext, ToolResult
 from huicode.tools.executor import execute_tool_call
 from huicode.tools.registry import ToolRegistry
 from huicode.tui import render_agent_event
-
-
-MAX_INLINE_TOOL_RESULT_CHARS = 4000
 
 
 def run_agent_turn(
@@ -68,6 +66,7 @@ def run_agent_loop(
     state.iterations = 0
     state.unknown_tool_count = 0
     empty_response_count = 0
+    context_manager = ContextManager(context.workspace, config.context)
     state.messages.append(ConversationMessage(role="user", content=_build_user_text(user_text, state, options)))
 
     while state.iterations < options.max_iterations:
@@ -84,13 +83,31 @@ def run_agent_loop(
         )
         try:
             prompt = build_agent_prompt(context=context, registry=registry, state=state, options=options, iteration=iteration)
+            selected_tools = select_tools(registry, options)
+            preparation = context_manager.prepare_before_request(
+                provider=provider,
+                state=state,
+                context=context,
+                config=config,
+                prompt=prompt,
+                tools=selected_tools,
+            )
+            request_estimate = TokenEstimate(
+                tokens=preparation.request_tokens,
+                chars=preparation.request_chars,
+                source="chars",
+            )
+            for report in preparation.reports:
+                yield AgentEvent(kind="context", iteration=iteration, data=report.to_dict())
             response = yield from collect_model_response(
                 provider=provider,
                 messages=state.messages,
-                tools=select_tools(registry, options),
+                tools=selected_tools,
                 prompt=prompt,
                 iteration=iteration,
             )
+            if response.usage:
+                context_manager.record_usage(state, response.usage, request_estimate)
         except KeyboardInterrupt:
             state.cancel_requested = True
             yield AgentEvent(
@@ -150,7 +167,15 @@ def run_agent_loop(
             yield AgentEvent(kind="done", iteration=iteration, stop_reason="final")
             return
 
-        outcomes = yield from execute_tool_batches(registry, context, state, response.tool_calls, iteration, options)
+        outcomes = yield from execute_tool_batches(
+            registry,
+            context,
+            state,
+            response.tool_calls,
+            iteration,
+            options,
+            context_manager,
+        )
         if _all_unknown_tool_results(outcomes):
             state.unknown_tool_count += len(outcomes)
         else:
@@ -280,6 +305,7 @@ def execute_tool_batches(
     calls: list[ToolCall],
     iteration: int,
     options: AgentOptions | None = None,
+    context_manager: ContextManager | None = None,
 ) -> Iterator[AgentEvent]:
     options = options or AgentOptions()
     batch = batch_tool_calls(calls, registry)
@@ -303,20 +329,28 @@ def execute_tool_batches(
         for call, result in zip(batch.parallel_read_calls, results, strict=False):
             if result is None:
                 result = ToolResult.failure("tool_exception", "工具执行未返回结果", {"tool": call.name})
-            result = _spill_large_tool_result(context, call, result, iteration)
+            context_report = None
+            if context_manager is not None:
+                result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
             state.messages.append(_tool_message(call, result))
             outcomes.append((call, result))
             yield AgentEvent(kind="tool_result", tool_call=call, tool_result=result, iteration=iteration)
+            if context_report is not None:
+                yield AgentEvent(kind="context", iteration=iteration, data=context_report.to_dict())
 
     for call in batch.serial_calls:
         yield AgentEvent(kind="tool_call", tool_call=call, iteration=iteration)
         result = _plan_mode_denial(registry, call, options)
         if result is None:
             result = execute_tool_call(registry, call, context)
-        result = _spill_large_tool_result(context, call, result, iteration)
+        context_report = None
+        if context_manager is not None:
+            result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
         state.messages.append(_tool_message(call, result))
         outcomes.append((call, result))
         yield AgentEvent(kind="tool_result", tool_call=call, tool_result=result, iteration=iteration)
+        if context_report is not None:
+            yield AgentEvent(kind="context", iteration=iteration, data=context_report.to_dict())
 
     return outcomes
 
@@ -350,57 +384,6 @@ def _tool_message(call: ToolCall, result: ToolResult) -> ConversationMessage:
         tool_name=call.name,
         tool_result=result,
     )
-
-
-def _spill_large_tool_result(
-    context: ToolContext,
-    call: ToolCall,
-    result: ToolResult,
-    iteration: int,
-) -> ToolResult:
-    serialized = json.dumps(result.to_model_dict(), ensure_ascii=False)
-    if len(serialized) <= MAX_INLINE_TOOL_RESULT_CHARS:
-        return result
-
-    relative_path = Path(".huicode") / "tool-results" / f"turn-{iteration:03d}-{_safe_filename(call.id)}.json"
-    spill_path = context.workspace / relative_path
-    spill_path.parent.mkdir(parents=True, exist_ok=True)
-    spill_path.write_text(serialized, encoding="utf-8")
-
-    compact_data = _compact_tool_data(result.data)
-    compact_data["__spilled__"] = {
-        "path": relative_path.as_posix(),
-        "chars_freed": max(0, len(serialized) - len(json.dumps(compact_data, ensure_ascii=False))),
-    }
-    compact_data["summary"] = result.summary
-    return ToolResult(ok=result.ok, data=compact_data, error=result.error, summary=result.summary)
-
-
-def _compact_tool_data(data: dict[str, object] | None) -> dict[str, object]:
-    if not data:
-        return {}
-    keep = {
-        "path",
-        "command",
-        "returncode",
-        "timed_out",
-        "lines",
-        "chars",
-        "bytes",
-        "count",
-        "pattern",
-    }
-    compact = {key: value for key, value in data.items() if key in keep}
-    omitted = sorted(key for key in data if key not in keep)
-    if omitted:
-        compact["omitted_fields"] = omitted
-    return compact
-
-
-def _safe_filename(value: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
-    return safe or "tool-result"
-
 
 def _build_user_text(user_text: str, state: AgentState, options: AgentOptions) -> str:
     if options.mode != "do" or not state.last_plan:

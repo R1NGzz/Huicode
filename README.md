@@ -1,6 +1,6 @@
 # HuiCode
 
-HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
+HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
 
 ## 能力概览
 
@@ -20,6 +20,7 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 结构化系统提示与缓存 usage 可观测
 - 五层权限系统
 - MCP 客户端工具接入
+- 两层上下文压缩
 
 ## 工具系统
 
@@ -95,6 +96,40 @@ mcp__<server>__<tool>
 - 单个 server 失败隔离，不影响其他 server 和本地工具
 
 本阶段暂不支持 MCP resources、prompts、sampling、server 健康检查、自动重连，也不把 MCP 工具标记为只读能力。因此 Plan Mode 下 MCP 工具默认会被拒绝，后续章节再补细粒度安全声明。
+
+## 上下文管理
+
+HuiCode 会在每次请求模型前管理上下文预算，尽量在不改写用户原话的前提下，让长对话继续可用。
+
+策略分两层：
+
+- 轻量预防：优先压缩工具结果。单个工具结果过大时，完整结果写入 `.huicode/tool-results/`，对话里只保留摘要、预览和相对路径。
+- 重量兜底：整体历史逼近窗口上限时，把较早消息压成结构化摘要，近期消息原文保留。
+
+整体摘要不是文件事实来源。摘要只用于导航和继续任务；如果模型需要文件细节、命令输出或完整工具结果，必须重新读取文件或重新调用工具，不能凭摘要脑补内容。
+
+当前实现使用近似 token 估算：
+
+- 优先锚定上一次 API usage 的 `input_tokens` 或 `prompt_tokens`
+- 对后续增量按字符数近似估算
+
+手动命令：
+
+```text
+/compact
+/context
+```
+
+- `/compact`：手动触发上下文压缩。
+- `/context`：查看当前上下文窗口、估算锚点、摘要次数、失败次数和熔断状态。
+
+默认会话内工具结果落盘目录：
+
+```text
+<workspace>/.huicode/tool-results/
+```
+
+`/config` 会显示简要上下文状态，例如 `context_window`、`context_summary_count` 和 `context_fuse`，但不会显示 secret 或落盘文件内容。
 
 ## 权限系统
 
@@ -259,6 +294,11 @@ thinking:
   enabled: true
   budget_tokens: 1024
   show: false
+context:
+  enabled: true
+  window_tokens: 128000
+  single_tool_result_tokens: 1000
+  tool_result_group_tokens: 6000
 ```
 
 ## 交互命令
@@ -266,6 +306,8 @@ thinking:
 - `/exit` 或 `/quit`：退出 HuiCode
 - `/clear`：清空本次会话记忆和最近计划
 - `/config`：查看当前协议和模型，不显示 API key
+- `/context`：查看当前上下文压缩状态
+- `/compact`：手动触发上下文压缩
 - `/plan [任务]`：进入只读计划模式；带任务时立即执行规划
 - `/do [任务]`：基于最近计划执行；不带任务时继续最近计划
 - `/verbose`：切换 token 用量显示，默认关闭
@@ -282,7 +324,6 @@ thinking:
 - CPU、内存、磁盘、进程数等资源配额
 - 完整审计日志
 - 操作系统级容器沙箱
-- 上下文压缩
 - 用户交互式确认之外的权限 UI
 - 子 Agent 或 `TaskCreate`
 - `ToolSearch`
