@@ -246,6 +246,57 @@ mock Provider 很适合保证内部逻辑，但它默认“协议干净、工具
 - Provider 兼容章节要有真实 API 或录制 payload 的验收。
 - 如果 E2E 因环境不可用没跑，要写进 acceptance report，而不是假装通过。
 
+## 踩坑 11：MCP 配置“能解析”不等于“能启动并注册工具”
+
+现象：
+
+Context7 MCP 配置文件放到项目里后，HuiCode 启动没有加载到工具。第一次排查发现文件路径曾放在 `.huicode/mcp.yaml`，但实现只读项目根目录 `.huicode-mcp.yaml`。移动后仍然没有注册工具，又发现顶层 key、`args` 类型和 Windows 命令名都有坑。
+
+具体表现：
+
+- 项目内 `.huicode/mcp.yaml` 不会被当前实现读取；项目级路径是 `.huicode-mcp.yaml`。
+- 顶层写成 `mcp_servers` 时，解析器不会报错，但 `loaded_server_count=0`，因为实现只认 `mcp`。
+- `args: ["-y", "@upstash/context7-mcp"]` 或 `args: -y @upstash/context7-mcp` 在当前简化 YAML 解析器里会变成字符串；实现要求 `args` 是多行列表。
+- Windows 下 Python `subprocess.Popen(["npx", ...])` 可能报 `[WinError 2] 系统找不到指定的文件`；改成 `command: npx.cmd` 后才能稳定启动。
+- 只检查“配置能加载到 1 个 server”还不够，必须实际启动 MCP manager 并确认 `mcp_tools` 数量。
+
+根因：
+
+008 MCP Client 的 spec 写清了“用户级、项目级两层合并”和“stdio 填 command/args/env”，但验收更偏 fake server 和内部接口，没有把“用户照着第三方 MCP 文档粘配置”的真实路径作为独立验收。Context7 官方示例多是 JSON，常见 key 有 `mcpServers`、`servers`，而 HuiCode 当前 YAML 格式是自定义的 `mcp`。此外 Windows 命令解析差异也没有写进 MCP 章节验收。
+
+后来补救：
+
+- 用脱敏结构检查确认配置路径、顶层 key、字段类型和 server 数量，不打印 token/header/env 的值。
+- 把 Context7 配置改成 HuiCode 当前可识别格式：
+
+```yaml
+mcp:
+  context7:
+    type: stdio
+    command: npx.cmd
+    args:
+      - "-y"
+      - "@upstash/context7-mcp"
+```
+
+- 实际启动 MCP manager 验证：
+
+```text
+mcp_servers=1/1
+mcp_tools=2
+tool=mcp__context7__resolve_library_id
+tool=mcp__context7__query_docs
+```
+
+以后写 spec 要补：
+
+- 配置类功能要区分“文件存在”“解析成功”“server 加载”“server 启动”“工具注册”五层验收。
+- README 示例必须使用当前解析器真实支持的 YAML 写法，不要放 inline list 这种看似标准但当前 parser 不支持的格式。
+- MCP 章节要至少覆盖一个真实第三方 server，例如 Context7，而不仅是 fake stdio/http server。
+- Windows 平台要验证 stdio command 是否能被 `subprocess` 直接启动；`npx` 这类命令优先写 `npx.cmd`。
+- 排查配置时默认采用脱敏结构检查，只输出 key 名、字段类型、数量和工具名，不打印 secret 值。
+- 如果用户实测暴露出 spec 未覆盖的返工问题，要立即更新本文件，形成后续章节的反例库。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -260,6 +311,20 @@ mock Provider 很适合保证内部逻辑，但它默认“协议干净、工具
 8. 多工具并发/串行顺序是否写入验收？
 9. README、测试、acceptance report 是否和实现同步？
 10. 本章文档是否在独立 `specs/NNN-*` 目录，避免覆盖旧记录？
+11. 配置类能力是否同时验证了路径、顶层 key、字段类型、环境变量展开和 secret 不泄露？
+12. 外部集成是否至少跑过一个真实第三方服务或本地真实启动命令，而不只靠 fake server？
+13. Windows 下 `subprocess` 能否直接找到配置里的 `command`？
+
+## 维护约定
+
+以后 HuiCode 开发中只要出现“已经按 Mew Spec 做完，但真实使用又返工”的问题，都要同步更新这份文档。记录时至少写清：
+
+- 现象：用户看到的报错或不符合预期的行为。
+- 根因：当初 spec、plan、task 或 checklist 漏掉了什么。
+- 后来补救：代码、测试、文档或配置怎样修。
+- 以后写 spec 要补：下一章可以直接复用的验收项。
+
+如果问题涉及配置或密钥，文档只记录结构和规则，不记录真实 token、header、API key 或本地私有路径中敏感部分。
 
 ## 结论
 
