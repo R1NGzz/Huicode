@@ -333,6 +333,7 @@ memory:
 /memory update
 /memory rebuild
 /sessions
+/resume
 /resume <session-id>
 /sessions clean
 ```
@@ -341,6 +342,7 @@ memory:
 - `/memory update`：手动根据最近对话整理记忆。
 - `/memory rebuild`：从笔记重建索引。
 - `/sessions`：列出可恢复会话。
+- `/resume`：列出可恢复会话，并提示恢复命令格式，不会向模型发送请求。
 - `/resume <session-id>`：恢复指定会话，坏行跳过，破损工具历史截断。
 - `/sessions clean`：清理超过保留期的非活动会话。
 
@@ -405,6 +407,7 @@ context:
 - `/memory update`：手动根据最近对话整理记忆
 - `/memory rebuild`：从笔记重建记忆索引
 - `/sessions`：列出可恢复会话
+- `/resume`：列出可恢复会话和恢复用法
 - `/resume <session-id>`：恢复指定会话
 - `/sessions clean`：清理过期非活动会话
 - `/permissions [strict|default|permissive]`：查看或切换权限模式

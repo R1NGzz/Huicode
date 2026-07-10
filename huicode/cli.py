@@ -182,6 +182,9 @@ def _run_chat(provider: Provider, config: LLMConfig, mcp_transport_factory=None)
                 removed = memory_manager.cleanup_sessions(state)
                 print(f"已清理过期会话 {removed} 个")
             continue
+        if command == "/resume":
+            print(_format_resume_choices(memory_manager))
+            continue
         if command.startswith("/resume "):
             if memory_manager is None:
                 print("记忆系统未启用")
@@ -405,6 +408,13 @@ def _format_sessions(memory_manager: MemoryManager | None) -> str:
             f" title={session.title}{warning_text}"
         )
     return "\n".join(lines)
+
+
+def _format_resume_choices(memory_manager: MemoryManager | None) -> str:
+    sessions_text = _format_sessions(memory_manager)
+    if memory_manager is None:
+        return sessions_text
+    return f"{sessions_text}\n使用 /resume <session-id> 恢复指定会话。"
 
 
 def _format_resume_report(report) -> str:

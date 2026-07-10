@@ -94,6 +94,40 @@ class CLIMemoryTests(unittest.TestCase):
         self.assertEqual(provider.calls[0]["messages"][0].content, "old question")
         self.assertEqual(provider.calls[0]["messages"][-1].content, "follow up")
 
+    def test_bare_resume_lists_sessions_without_calling_provider(self) -> None:
+        session_id = "20260709-010101-list"
+        session_dir = self.root / ".huicode" / "sessions"
+        session_dir.mkdir(parents=True)
+        record = {
+            "type": "message",
+            "session_id": session_id,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": message_to_json(ConversationMessage(role="user", content="listed session")),
+        }
+        (session_dir / f"{session_id}.jsonl").write_text(
+            json.dumps(record, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        provider = FakeProvider()
+        config = LLMConfig(
+            "openai",
+            "fake",
+            "https://example.test",
+            "key",
+            memory=MemoryConfig(enabled=True, auto_update=False),
+        )
+
+        output = io.StringIO()
+        with patch.dict("os.environ", {"HUICODE_HOME": str(self.root / "home")}):
+            with patch("builtins.input", side_effect=["/resume", "/exit"]):
+                with redirect_stdout(output):
+                    exit_code = _run_chat(provider, config)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn(session_id, output.getvalue())
+        self.assertIn("/resume <session-id>", output.getvalue())
+        self.assertEqual(provider.calls, [])
+
     def test_memory_update_and_rebuild_commands(self) -> None:
         provider = FakeProvider()
         config = LLMConfig(
