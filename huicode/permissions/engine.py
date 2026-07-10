@@ -30,6 +30,10 @@ def evaluate_permission(call: ToolCall, tool, context: ToolContext) -> Permissio
     if sandbox_decision is not None:
         return sandbox_decision
 
+    internal_state_decision = _check_internal_state_write(call, context)
+    if internal_state_decision is not None:
+        return internal_state_decision
+
     for rule in permissions.session_rules:
         if match_rule(rule, call):
             return _decision_from_rule(rule)
@@ -74,6 +78,44 @@ def _check_sandbox(call: ToolCall, context: ToolContext, permissions: Permission
             resolve_workspace_path(permissions.workspace or context.workspace, path)
         except ValueError as exc:
             return PermissionDecision(False, str(exc), "sandbox", risk="high")
+    return None
+
+
+def _check_internal_state_write(call: ToolCall, context: ToolContext) -> PermissionDecision | None:
+    protected = (".huicode/memory", ".huicode/sessions")
+    workspace = (
+        context.permissions.workspace
+        if context.permissions and context.permissions.workspace
+        else context.workspace
+    )
+    if call.name in {"Write", "Edit"}:
+        for raw_path in extract_tool_paths(call.name, call.arguments):
+            try:
+                relative = (
+                    resolve_workspace_path(workspace, raw_path)
+                    .relative_to(workspace.resolve())
+                    .as_posix()
+                    .lower()
+                )
+            except (ValueError, OSError):
+                continue
+            if any(relative == root or relative.startswith(f"{root}/") for root in protected):
+                return PermissionDecision(
+                    False,
+                    "HuiCode 会话和长期记忆由后台自动维护，请勿通过文件工具修改",
+                    "internal_state",
+                    risk="medium",
+                )
+    if call.name == "Bash":
+        command = _string_arg(call.arguments, "command")
+        normalized = command.replace("\\", "/").lower()
+        if any(root in normalized for root in protected) and not _is_read_only_shell_command(command, context):
+            return PermissionDecision(
+                False,
+                "HuiCode 会话和长期记忆由后台自动维护，请勿通过 Bash 修改",
+                "internal_state",
+                risk="medium",
+            )
     return None
 
 

@@ -34,7 +34,7 @@
   - 证据：`python -m unittest tests.test_openai_provider_tools tests.test_anthropic_provider_tools -v` 通过。
 
 - [x] Prompt、TUI、上下文、权限、MCP 等旧能力未回退。
-  - 证据：`python -m unittest discover -v` 通过，214 个测试全部 OK。
+  - 证据：`python -m unittest discover -v` 通过，218 个测试全部 OK。
 
 - [x] Python 文件能正常编译。
   - 证据：`python -m compileall -q huicode tests` 通过。
@@ -75,4 +75,6 @@
 
 - `checklist.md` 初版误用英文输出，已按 `AGENT.md` 改为中文，并记录到 `docs/mew-spec-pitfalls.md`。
 - 恢复会话时不再无条件触发上下文压缩，改为接近窗口阈值时才调用 `ContextManager.manual_compact()`。
-- `AgentOptions.max_iterations` 恢复为既有默认值 8，避免记忆系统改动顺手改变 Agent Loop 行为。
+- 自动记忆更新改为后台静默执行，不显示权限确认；主 Agent 对内部会话和记忆目录的副作用操作会直接拒绝。
+- `AgentOptions.max_iterations` 按用户原有设定恢复为 50，避免记忆系统实现覆盖既有行为。
+- Windows Bash 输出改为二进制收集后按 UTF-8/本地编码解码，修复读取 UTF-8 JSONL 时的 `UnicodeDecodeError` 和后续空值异常。

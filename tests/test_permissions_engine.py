@@ -134,6 +134,32 @@ class PermissionEngineTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(len(confirmer.requests), 1)
 
+    def test_internal_memory_writes_are_denied_without_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            confirmer = FakeConfirmer("once")
+            context = ToolContext(
+                workspace,
+                permissions=PermissionContext(workspace=workspace, mode="default", confirmer=confirmer),
+            )
+
+            write = evaluate_permission(
+                ToolCall("1", "Write", {"path": ".huicode/memory/notes/manual.md"}),
+                WriteFileTool(),
+                context,
+            )
+            bash = evaluate_permission(
+                ToolCall("2", "Bash", {"command": "echo data > .huicode\\sessions\\broken.jsonl"}),
+                RunCommandTool(),
+                context,
+            )
+
+        self.assertFalse(write.allowed)
+        self.assertFalse(bash.allowed)
+        self.assertEqual(write.source, "internal_state")
+        self.assertEqual(bash.source, "internal_state")
+        self.assertEqual(confirmer.requests, [])
+
     def test_read_only_bash_outside_workspace_is_not_low_risk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

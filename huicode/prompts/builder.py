@@ -26,6 +26,22 @@ def build_prompt_bundle(
 
 def _memory_modules(context: PromptContext) -> tuple[PromptModule, ...]:
     modules: list[PromptModule] = []
+    if context.memory_enabled:
+        modules.append(
+            PromptModule(
+                name="memory_management",
+                content=(
+                    '<huicode_instruction type="memory_management" scope="session">\n'
+                    "会话存档和长期记忆由 HuiCode 后台自动维护，不需要用户权限确认。"
+                    "不要为了记录、更新或检查记忆而调用 Read、Write、Edit 或 Bash 访问 "
+                    "`.huicode/sessions`、`.huicode/memory` 或用户级记忆目录；"
+                    "仅当用户明确要求检查这些内部文件时才可读取。\n"
+                    "</huicode_instruction>"
+                ),
+                stable=False,
+                cacheable=False,
+            )
+        )
     if context.memory_index.strip():
         modules.append(
             PromptModule(

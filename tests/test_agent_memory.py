@@ -78,6 +78,7 @@ class AgentMemoryTests(unittest.TestCase):
         self.assertEqual([record["message"]["role"] for record in records], ["user", "assistant"])
         prompt = provider.calls[0]["prompt"]
         self.assertIn("项目必须使用中文回答", prompt.stable_text())
+        self.assertIn("memory_management", prompt.module_names())
         self.assertIn("memory_index", prompt.module_names())
         self.assertIn("remembered", prompt.supplemental_text())
 
@@ -115,6 +116,41 @@ class AgentMemoryTests(unittest.TestCase):
 
         self.assertIn("memory", [event.kind for event in events])
         self.assertEqual(len(notes), 1)
+        self.assertEqual(len(provider.calls), 2)
+        self.assertFalse(provider.calls[1]["allow_tool_calls"])
+
+    def test_async_auto_update_is_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "work"
+            home = Path(directory) / "home"
+            workspace.mkdir()
+            provider = MemoryAwareProvider()
+            config = LLMConfig(
+                "openai",
+                "fake",
+                "https://example.test",
+                "key",
+                memory=MemoryConfig(enabled=True, auto_update=True),
+            )
+            state = AgentState()
+            with patch.dict("os.environ", {"HUICODE_HOME": str(home)}):
+                manager = MemoryManager(workspace, config.memory, config, provider)
+                manager.start(state)
+                events = list(
+                    run_agent_loop(
+                        provider=provider,
+                        registry=create_default_registry(workspace),
+                        context=ToolContext(workspace=workspace),
+                        state=state,
+                        user_text="remember silently",
+                        config=config,
+                        options=AgentOptions(),
+                        memory=manager,
+                    )
+                )
+                manager.close()
+
+        self.assertNotIn("memory", [event.kind for event in events])
         self.assertEqual(len(provider.calls), 2)
         self.assertFalse(provider.calls[1]["allow_tool_calls"])
 

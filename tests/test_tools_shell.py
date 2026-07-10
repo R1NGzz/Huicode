@@ -9,7 +9,7 @@ from huicode.providers.base import ToolCall
 from huicode.tools.base import ToolContext
 from huicode.tools.executor import execute_tool_call
 from huicode.tools.registry import create_default_registry
-from huicode.tools.shell import RunCommandTool, _prepare_command
+from huicode.tools.shell import RunCommandTool, _decode_output, _prepare_command
 
 
 class ShellToolTests(unittest.TestCase):
@@ -45,6 +45,26 @@ class ShellToolTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error.code, "timeout")
         self.assertTrue(result.error.details["timed_out"])
+
+    def test_decodes_utf8_local_encoding_and_none_output(self) -> None:
+        self.assertEqual(_decode_output("会话恢复".encode("utf-8")), "会话恢复")
+        self.assertEqual(_decode_output("中文输出".encode("gb18030")), "中文输出")
+        self.assertEqual(_decode_output(None), "")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows type 命令回归测试")
+    def test_reads_utf8_jsonl_with_windows_type(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            session = workspace / "session.jsonl"
+            session.write_text('{"content":"恢复 € 中文"}\n', encoding="utf-8")
+
+            result = RunCommandTool().run(
+                {"command": 'type "session.jsonl"'},
+                ToolContext(workspace=workspace),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertIn("恢复 € 中文", result.data["stdout"])
 
     def test_normalizes_common_unix_ls_on_windows(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch("huicode.tools.shell.os.name", "nt"):

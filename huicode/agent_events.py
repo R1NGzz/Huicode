@@ -46,7 +46,7 @@ class CollectedResponse:
 
 @dataclass(frozen=True)
 class AgentOptions:
-    max_iterations: int = 8
+    max_iterations: int = 50
     max_unknown_tools: int = 2
     max_empty_responses: int = 1
     mode: AgentMode = "chat"

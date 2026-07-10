@@ -12,9 +12,18 @@ COMMON_RULES = (
 
 TOOL_RULES = {
     "Read": "读取文件真实内容；分析或编辑文件前优先调用它确认现状。",
-    "Write": "写入会覆盖目标文件；只有在明确需要创建或整体替换文件时使用。",
-    "Edit": "编辑前必须先 Read；old_text 必须在原文中唯一匹配，匹配不到或多次匹配都应让模型重试。",
-    "Bash": "执行命令前确认是否真的需要 shell；查找文件优先用 Find，搜索内容优先用 Search；不要越过 workspace 边界。",
+    "Write": (
+        "写入会覆盖目标文件；只有在明确需要创建或整体替换文件时使用。"
+        "不要写入 HuiCode 自动维护的 .huicode/sessions 和 .huicode/memory。"
+    ),
+    "Edit": (
+        "编辑前必须先 Read；old_text 必须在原文中唯一匹配，匹配不到或多次匹配都应让模型重试。"
+        "不要修改 HuiCode 自动维护的 .huicode/sessions 和 .huicode/memory。"
+    ),
+    "Bash": (
+        "执行命令前确认是否真的需要 shell；查找文件优先用 Find，搜索内容优先用 Search；"
+        "不要越过 workspace 边界，也不要用 shell 维护 HuiCode 的会话或长期记忆文件。"
+    ),
     "Find": "按 glob 模式找文件；用于定位路径时优先于 Bash。",
     "Search": "搜索代码或文本内容；用于定位符号、配置和错误文本时优先于 Bash。",
 }

@@ -293,6 +293,7 @@ def build_agent_prompt(
         read_only_tool_names=tuple(sorted(options.read_only_tool_names)),
         last_plan=state.last_plan,
         custom_instructions=state.memory.instructions_text,
+        memory_enabled=bool(state.memory.session_id),
         memory_index=state.memory.memory_index_text,
         memory_warnings=tuple(state.memory.warnings),
     )

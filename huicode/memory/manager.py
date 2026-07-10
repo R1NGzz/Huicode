@@ -104,7 +104,8 @@ class MemoryManager:
         if self.synchronous_updates or self.executor is None:
             return run_update()
         self.futures.append(self.executor.submit(run_update))
-        return MemoryUpdateReport(ok=True, message="记忆更新已排队")
+        # 自动整理在后台静默完成，失败可通过 /memory 查看，不能打断主交互。
+        return MemoryUpdateReport(ok=True, message="", noop=True)
 
     def update_now(self, state: AgentState, mode: AgentMode = "chat") -> MemoryUpdateReport:
         start = max(0, len(state.messages) - 6)

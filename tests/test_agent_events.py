@@ -9,7 +9,7 @@ class AgentEventTests(unittest.TestCase):
         state = AgentState()
         batch = ToolBatch()
 
-        self.assertEqual(options.max_iterations, 8)
+        self.assertEqual(options.max_iterations, 50)
         self.assertEqual(options.max_unknown_tools, 2)
         self.assertEqual(options.mode, "chat")
         self.assertEqual(options.read_only_tool_names, frozenset({"Read", "Find", "Search", "Glob"}))

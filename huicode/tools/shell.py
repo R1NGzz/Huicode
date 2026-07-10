@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import codecs
+import locale
 import os
 import re
 import subprocess
@@ -41,13 +43,12 @@ class RunCommandTool:
                 command,
                 cwd=context.workspace,
                 shell=True,
-                text=True,
                 capture_output=True,
                 timeout=timeout,
             )
-            stdout = _limit_lines(completed.stdout, line_limit)
+            stdout = _limit_lines(_decode_output(completed.stdout), line_limit)
             stdout = _truncate(stdout, context.max_output_chars)
-            stderr = _truncate(completed.stderr, context.max_output_chars)
+            stderr = _truncate(_decode_output(completed.stderr), context.max_output_chars)
             ok = completed.returncode == 0
             data = {
                 "command": command,
@@ -61,8 +62,8 @@ class RunCommandTool:
                 return ToolResult.success(data, summary)
             return ToolResult.failure("nonzero_exit", f"命令退出码为 {completed.returncode}", data, summary)
         except subprocess.TimeoutExpired as exc:
-            stdout = _truncate(exc.stdout or "", context.max_output_chars)
-            stderr = _truncate(exc.stderr or "", context.max_output_chars)
+            stdout = _truncate(_decode_output(exc.stdout), context.max_output_chars)
+            stderr = _truncate(_decode_output(exc.stderr), context.max_output_chars)
             return ToolResult.failure(
                 "timeout",
                 f"命令执行超过 {timeout} 秒",
@@ -79,18 +80,38 @@ class RunCommandTool:
             return ToolResult.failure("exec_error", f"执行命令失败: {exc}", {"command": command})
 
 
-def _truncate(value: str | bytes, limit: int) -> str:
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="replace")
+def _decode_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if value.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return value.decode("utf-16", errors="replace")
+    encodings = ("utf-8-sig", locale.getpreferredencoding(False), "gb18030")
+    tried: set[str] = set()
+    for encoding in encodings:
+        normalized = encoding.lower()
+        if normalized in tried:
+            continue
+        tried.add(normalized)
+        try:
+            return value.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return value.decode("utf-8", errors="replace")
+
+
+def _truncate(value: str | bytes | None, limit: int) -> str:
+    value = _decode_output(value)
     if len(value) <= limit:
         return value
     return value[:limit] + "\n...[truncated]"
 
 
-def _limit_lines(value: str | bytes, limit: int | None) -> str | bytes:
+def _limit_lines(value: str | bytes | None, limit: int | None) -> str:
+    text = _decode_output(value)
     if limit is None:
-        return value
-    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+        return text
     return "\n".join(text.splitlines()[:limit])
 
 
