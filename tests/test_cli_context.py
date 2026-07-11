@@ -51,7 +51,7 @@ class CLIContextTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         text = output.getvalue()
-        self.assertIn("summary created", text)
+        self.assertIn("上下文摘要已生成", text)
         self.assertIn("summary_count=1", text)
         self.assertIn("fuse=false", text)
 
@@ -92,8 +92,8 @@ class CLIContextTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         text = output.getvalue()
-        self.assertIn("context_window=64000", text)
-        self.assertIn("context_fuse=false", text)
+        self.assertIn("window=64000", text)
+        self.assertIn("fuse=false", text)
         self.assertNotIn("secret-api-key", text)
         self.assertNotIn("secret-title", text)
 

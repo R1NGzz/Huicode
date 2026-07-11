@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from .registry import CommandRegistry
+
+
+CommandMode = Literal["default", "plan"]
+
+
+class CommandUI(Protocol):
+    def show_message(self, message: str, *, error: bool = False) -> None: ...
+
+    def send_user_message(self, message: str) -> None: ...
+
+    def get_mode(self) -> CommandMode: ...
+
+    def set_mode(self, mode: CommandMode) -> None: ...
+
+    def get_token_status(self) -> dict[str, object]: ...
+
+    def refresh_status(self) -> None: ...
+
+
+class CommandServices(Protocol):
+    def compact(self) -> str: ...
+
+    def clear(self) -> str: ...
+
+    def session(self, arguments: str) -> str: ...
+
+    def memory(self, arguments: str) -> str: ...
+
+    def permission(self, arguments: str) -> str: ...
+
+    def status(self) -> str: ...
+
+    def context_status(self) -> str: ...
+
+    def toggle_verbose(self) -> str: ...
+
+    def last(self, arguments: str) -> str: ...
+
+    def request_exit(self) -> None: ...
+
+
+@dataclass
+class CommandContext:
+    ui: CommandUI
+    services: CommandServices
+    registry: "CommandRegistry"

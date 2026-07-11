@@ -88,9 +88,8 @@ class CLITests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         text = output.getvalue()
-        self.assertIn("protocol=fake", text)
-        self.assertIn("fake-model", text)
-        self.assertIn("headers=X-Title", text)
+        self.assertIn("provider: fake / fake-model", text)
+        self.assertIn("context:", text)
         self.assertNotIn("secret-api-key", text)
         self.assertNotIn("secret-title", text)
 
@@ -207,9 +206,8 @@ class CLITests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         text = output.getvalue()
-        self.assertIn("permissions mode=default", text)
-        self.assertIn("权限模式已切换为 strict", text)
-        self.assertIn("permissions mode=strict", text)
+        self.assertIn("mode=default", text)
+        self.assertIn("mode=strict", text)
 
     def test_perm_alias_shows_and_switches_mode(self) -> None:
         provider = FakeProvider()
@@ -220,9 +218,9 @@ class CLITests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         text = output.getvalue()
-        self.assertIn("permissions mode=default", text)
+        self.assertIn("mode=default", text)
         self.assertIn("strict", text)
-        self.assertIn("permissions mode=strict", text)
+        self.assertIn("mode=strict", text)
 
     def test_permission_confirmation_shortcuts_and_empty_default_deny(self) -> None:
         request = PermissionRequest(
@@ -241,6 +239,24 @@ class CLITests(unittest.TestCase):
         with patch("builtins.input", return_value=""), redirect_stdout(io.StringIO()):
             denied = confirmer.confirm(request)
         self.assertEqual(denied.action, "deny")
+
+    def test_permission_confirmation_disables_command_completion(self) -> None:
+        class FakePromptSession:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def prompt(self, prompt, **kwargs):  # noqa: ANN001
+                self.calls.append((prompt, kwargs))
+                return "o"
+
+        session = FakePromptSession()
+        confirmer = ConsolePermissionConfirmer(session)
+
+        answer = confirmer._read_permission_input()
+
+        self.assertEqual(answer, "o")
+        self.assertIsNone(session.calls[0][1]["completer"])
+        self.assertFalse(session.calls[0][1]["complete_while_typing"])
 
     def test_mcp_tools_are_registered_and_config_summary_hides_secrets(self) -> None:
         class ToolRecordingProvider(FakeProvider):
@@ -277,8 +293,7 @@ class CLITests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         text = output.getvalue()
-        self.assertIn("mcp_servers=1/1", text)
-        self.assertIn("mcp_tools=1", text)
+        self.assertIn("mcp: servers=1/1 tools=1 errors=0", text)
         self.assertNotIn("super-secret", text)
         self.assertIn("mcp__fake__echo", provider.tool_names)
         self.assertTrue(FakeMCPTransport.instances[0].closed)
@@ -325,8 +340,7 @@ class CLITests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         text = output.getvalue()
-        self.assertIn("mcp_servers=1/1", text)
-        self.assertIn("mcp_tools=1", text)
+        self.assertIn("mcp: servers=1/1 tools=1 errors=0", text)
         self.assertNotIn("inline-secret", text)
         self.assertIn("mcp__inline__echo", provider.tool_names)
         self.assertTrue(FakeMCPTransport.instances[0].closed)

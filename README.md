@@ -14,13 +14,14 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 统一工具系统
 - 多轮 ReAct Agent Loop
 - `/plan` 只读规划模式
-- `/do` 基于最近计划执行
+- `/do` 返回默认执行模式
 - Rich Markdown 输出渲染
 - prompt_toolkit 交互输入增强
 - 结构化系统提示与缓存 usage 可观测
 - 五层权限系统
 - MCP 客户端工具接入
 - 两层上下文压缩
+- 统一 Slash Command 注册、分发和 Tab 补全
 
 ## 工具系统
 
@@ -205,6 +206,35 @@ rules:
 
 每条规则只能是 `allow` 或 `deny`。规则按精确匹配和 glob 匹配工具参数；`Bash` 匹配命令文本，文件工具匹配路径。
 
+## Slash Command
+
+斜杠命令在用户回车后先于 Agent 解析。本地命令和状态命令不会进入 Agent Loop，也不会消耗模型 Token；只有 `/review` 会把固定审查提示词展开后发送给 Agent。
+
+命令由统一注册中心提供元数据、帮助、别名、分发和 Tab 补全。命令名大小写不敏感，未知命令会提示 `/help`，不会被当成普通问题发给模型。启动时如果名称或别名冲突，HuiCode 会直接报告命令注册错误并退出。
+
+十个公开命令：
+
+```text
+/help [command]
+/compact
+/clear
+/plan
+/do
+/session [resume <session-id>|clean]
+/memory [update|rebuild]
+/permission [strict|default|permissive]
+/status
+/review [focus]
+```
+
+命令分三类：
+
+- 本地命令：查询状态或执行已有管理流程，不进入 Agent。
+- 状态命令：改变模式、权限或当前会话状态，并立即刷新状态栏。
+- 提示词命令：展开预设提示词后进入正常 Agent Loop；当前只有 `/review`。
+
+交互终端底部状态栏会显示 `[DEFAULT]` 或 `[PLAN]`，以及最近 Token、权限模式和记忆状态。非交互回退输入会在 `You>` 前显示相同模式标记。Tab 单匹配直接补全，多匹配显示候选菜单；隐藏兼容命令不参与补全。
+
 ## Agent Loop
 
 普通输入会进入多轮 ReAct 流程：
@@ -220,14 +250,19 @@ rules:
 
 ## Plan Mode
 
-`/plan` 会让 HuiCode 只暴露读类工具，先分析项目并产出计划；`/do` 再基于最近计划切回全工具执行。
+`/plan` 只负责进入 `[PLAN]`，之后的普通输入只暴露读类工具并用于调查、规划。`/do` 只负责返回 `[DEFAULT]`；它不会自动执行最近计划，也不会请求模型。返回默认模式后，再输入明确任务才会使用完整工具集执行。
 
 ```text
-You> /plan 帮我规划如何给 CLI 增加版本号参数
-HuiCode> ...
+[DEFAULT] You> /plan
+已进入 [PLAN]，后续普通输入只使用读类工具。
 
-You> /do
-HuiCode> ...
+[PLAN] You> 帮我规划如何给 CLI 增加版本号参数
+HuiCode> ● ...
+
+[PLAN] You> /do
+已返回 [DEFAULT]。
+
+[DEFAULT] You> 按刚才的计划开始实现
 ```
 
 ## 结构化系统提示
@@ -255,7 +290,7 @@ HuiCode 会把系统提示按优先级拼装成固定模块：
 <huicode_instruction type="execution_mode" scope="turn">...</huicode_instruction>
 ```
 
-Plan/Do 指令注入频率为：首轮完整注入，每 4 轮重复关键约束，其余轮次注入精简提醒。
+Plan/DEFAULT 指令注入频率为：首轮完整注入，每 4 轮重复关键约束，其余轮次注入精简提醒。
 
 这些提示词只约束模型行为，不代表实现了新的底层能力。当前 HuiCode 还没有子 Agent、`TaskCreate`、真实 MCP 接入或 `ToolSearch` 工具；模型只能使用工具列表中真实暴露的能力。
 
@@ -332,19 +367,17 @@ memory:
 /memory
 /memory update
 /memory rebuild
-/sessions
-/resume
-/resume <session-id>
-/sessions clean
+/session
+/session resume <session-id>
+/session clean
 ```
 
 - `/memory`：查看当前 session、笔记数量、索引大小和最近错误。
 - `/memory update`：手动根据最近对话整理记忆。
 - `/memory rebuild`：从笔记重建索引。
-- `/sessions`：列出可恢复会话。
-- `/resume`：列出可恢复会话，并提示恢复命令格式，不会向模型发送请求。
-- `/resume <session-id>`：恢复指定会话，坏行跳过，破损工具历史截断。
-- `/sessions clean`：清理超过保留期的非活动会话。
+- `/session`：列出可恢复会话。
+- `/session resume <session-id>`：恢复指定会话，坏行跳过，破损工具历史截断。
+- `/session clean`：清理超过保留期的非活动会话。
 
 `/clear` 只清空当前工作上下文并开启新 session，不删除历史 session、长期笔记或索引。记忆状态、索引和笔记写入前会做基础 secret 脱敏，不会主动输出 API key、Authorization、token、password 等敏感值。
 
@@ -394,24 +427,18 @@ context:
 
 ## 交互命令
 
-- `/exit` 或 `/quit`：退出 HuiCode
-- `/clear`：清空本次会话记忆和最近计划
-- `/config`：查看当前协议和模型，不显示 API key
-- `/context`：查看当前上下文压缩状态
-- `/compact`：手动触发上下文压缩
-- `/plan [任务]`：进入只读计划模式；带任务时立即执行规划
-- `/do [任务]`：基于最近计划执行；不带任务时继续最近计划
-- `/verbose`：切换 token 用量显示，默认关闭
-- `/last [数量]`：展开最近工具结果，默认 1 条，最大 5 条
-- `/memory`：查看记忆状态、当前 session、笔记数量和索引大小
-- `/memory update`：手动根据最近对话整理记忆
-- `/memory rebuild`：从笔记重建记忆索引
-- `/sessions`：列出可恢复会话
-- `/resume`：列出可恢复会话和恢复用法
-- `/resume <session-id>`：恢复指定会话
-- `/sessions clean`：清理过期非活动会话
-- `/permissions [strict|default|permissive]`：查看或切换权限模式
-- `/perm [strict|default|permissive]`：`/permissions` 的短别名
+- `/help [command]`：查看公开命令列表或单条命令详情
+- `/compact`：手动触发上下文压缩，不进入 Agent Loop
+- `/clear`：清空当前工作上下文和计划，开启新 session
+- `/plan`：进入 `[PLAN]`，后续普通输入只使用读类工具
+- `/do`：返回 `[DEFAULT]`，不自动执行计划
+- `/session [resume <session-id>|clean]`：列出、恢复或清理会话
+- `/memory [update|rebuild]`：查看、更新长期记忆或重建索引
+- `/permission [strict|default|permissive]`：查看或切换权限模式
+- `/status`：聚合查看模式、Provider、Token、上下文、权限、MCP 和记忆
+- `/review [focus]`：展开固定代码审查提示并交给 Agent，因而会消耗 Token
+
+为兼容旧用法，`/sessions`、`/resume`、`/permissions`、`/perm`、`/config`、`/context`、`/verbose`、`/last`、`/exit`、`/quit` 仍可使用，但不会出现在 `/help` 或 Tab 补全中。后续破坏性版本可能移除这些隐藏入口。
 
 ## 本阶段暂不包含
 

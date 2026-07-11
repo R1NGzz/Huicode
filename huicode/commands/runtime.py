@@ -1,0 +1,341 @@
+from __future__ import annotations
+
+import json
+import sys
+from collections.abc import Callable
+from typing import TextIO
+
+from huicode.agent_events import AgentMode, AgentState
+from huicode.config import LLMConfig
+from huicode.context import ContextManager
+from huicode.memory.manager import MemoryManager
+from huicode.mcp import MCPManager
+from huicode.permissions import PermissionContext
+from huicode.providers.base import Provider
+from huicode.tools.base import ToolContext
+from huicode.tools.registry import ToolRegistry
+
+from .ui import CommandMode
+
+
+SendUserMessage = Callable[[str, AgentMode, bool], None]
+
+
+class CLICommandRuntime:
+    def __init__(
+        self,
+        *,
+        provider: Provider,
+        config: LLMConfig,
+        tool_registry: ToolRegistry,
+        tool_context: ToolContext,
+        state: AgentState,
+        context_manager: ContextManager,
+        permission_context: PermissionContext,
+        send_user_message: SendUserMessage,
+        memory_manager: MemoryManager | None = None,
+        mcp_manager: MCPManager | None = None,
+        output: TextIO | None = None,
+    ) -> None:
+        self.provider = provider
+        self.config = config
+        self.tool_registry = tool_registry
+        self.tool_context = tool_context
+        self.state = state
+        self.context_manager = context_manager
+        self.permission_context = permission_context
+        self.memory_manager = memory_manager
+        self.mcp_manager = mcp_manager
+        self.output = output or sys.stdout
+        self._send_user_message = send_user_message
+        self._mode: CommandMode = "default"
+        self.show_usage = config.show_usage
+        self.exit_requested = False
+        self._refresh_callback: Callable[[], None] | None = None
+
+    def show_message(self, message: str, *, error: bool = False) -> None:
+        print(message, file=self.output)
+
+    def send_user_message(self, message: str) -> None:
+        mode: AgentMode = "plan" if self._mode == "plan" else "chat"
+        try:
+            self._send_user_message(message, mode, self.show_usage)
+        finally:
+            self.refresh_status()
+
+    def get_mode(self) -> CommandMode:
+        return self._mode
+
+    def set_mode(self, mode: CommandMode) -> None:
+        self._mode = mode
+
+    def get_token_status(self) -> dict[str, object]:
+        last = self.state.context.last_input_tokens
+        if last is None:
+            last = self.state.context.last_estimated_request_tokens
+        return {
+            "last": last,
+            "window": self.config.context.window_tokens,
+            "summary_count": self.state.context.summary_count,
+            "fuse": self.state.context.summary_fuse_open,
+        }
+
+    def refresh_status(self) -> None:
+        if self._refresh_callback is not None:
+            try:
+                self._refresh_callback()
+            except Exception:
+                pass
+
+    def set_refresh_callback(self, callback: Callable[[], None] | None) -> None:
+        self._refresh_callback = callback
+
+    def compact(self) -> str:
+        report = self.context_manager.manual_compact(
+            provider=self.provider,
+            state=self.state,
+            context=self.tool_context,
+            config=self.config,
+            prompt=None,
+            tools=[],
+        )
+        self.refresh_status()
+        if report.kind == "summary":
+            return f"上下文摘要已生成: {report.tokens_before} -> {report.tokens_after} tokens"
+        if report.kind == "failure":
+            return f"上下文压缩失败: {report.message}"
+        if report.kind == "fuse":
+            return report.message or "上下文摘要已熔断"
+        if report.kind == "lightweight":
+            return f"上下文已整理: 释放约 {report.tokens_freed} tokens"
+        return f"上下文压缩跳过: {report.message}"
+
+    def clear(self) -> str:
+        self.state.messages.clear()
+        self.state.last_plan = ""
+        self.state.cancel_requested = False
+        self.state.unknown_tool_count = 0
+        self.state.iterations = 0
+        self.context_manager.reset(self.state)
+        if self.memory_manager is not None:
+            self.memory_manager.clear_current_session(self.state)
+        self._mode = "default"
+        self.refresh_status()
+        return "本次工作上下文和计划状态已清空，已开启新会话。"
+
+    def session(self, arguments: str) -> str:
+        if self.memory_manager is None:
+            return "记忆系统未启用"
+        if not arguments:
+            return self._format_sessions()
+        if arguments == "clean":
+            removed = self.memory_manager.cleanup_sessions(self.state)
+            return f"已清理过期会话 {removed} 个"
+        if arguments.startswith("resume "):
+            session_id = arguments.split(maxsplit=1)[1].strip()
+            report = self.memory_manager.resume_session(
+                session_id,
+                self.state,
+                self.context_manager,
+                self.tool_context,
+                self.config,
+            )
+            self.refresh_status()
+            return self._format_resume_report(report)
+        return "用法: /session [resume <session-id>|clean]"
+
+    def memory(self, arguments: str) -> str:
+        if self.memory_manager is None:
+            return "记忆系统未启用"
+        if arguments == "update":
+            mode: AgentMode = "plan" if self._mode == "plan" else "chat"
+            report = self.memory_manager.update_now(self.state, mode)
+            self.refresh_status()
+            return report.message
+        if arguments == "rebuild":
+            message = self.memory_manager.rebuild_index(self.state)
+            self.refresh_status()
+            return message
+        return self._format_memory_summary()
+
+    def permission(self, arguments: str) -> str:
+        if arguments:
+            self.permission_context.mode = arguments  # type: ignore[assignment]
+        return self._format_permission_summary()
+
+    def status(self) -> str:
+        tokens = self.get_token_status()
+        lines = [
+            f"mode: {self.mode_label()}",
+            f"provider: {self.provider.name} / {self.provider.model}",
+            (
+                "context: "
+                f"last={tokens['last'] if tokens['last'] is not None else '-'} "
+                f"window={tokens['window']} summaries={tokens['summary_count']} "
+                f"fuse={str(tokens['fuse']).lower()}"
+            ),
+            f"permission: {self._format_permission_summary()}",
+            f"mcp: {self._format_mcp_summary()}",
+            f"memory: {self._format_memory_summary(compact=True)}",
+        ]
+        return "\n".join(lines)
+
+    def context_status(self) -> str:
+        state = self.state.context
+        settings = self.config.context
+        return (
+            f"context enabled={str(settings.enabled).lower()}"
+            f" window={settings.window_tokens}"
+            f" auto_margin={settings.auto_margin_tokens}"
+            f" manual_margin={settings.manual_margin_tokens}"
+            f" last_input_tokens={state.last_input_tokens}"
+            f" last_estimated_request_tokens={state.last_estimated_request_tokens}"
+            f" summary_count={state.summary_count}"
+            f" failure_count={state.summary_failure_count}"
+            f" fuse={str(state.summary_fuse_open).lower()}"
+        )
+
+    def toggle_verbose(self) -> str:
+        self.show_usage = not self.show_usage
+        return f"详细用量显示已{'开启' if self.show_usage else '关闭'}。"
+
+    def last(self, arguments: str) -> str:
+        count = self._parse_last_count(arguments)
+        tool_messages = [
+            message
+            for message in self.state.messages
+            if message.role == "tool" and message.tool_result is not None
+        ]
+        if not tool_messages:
+            return "还没有可展开的工具结果。"
+        selected = tool_messages[-count:]
+        return "\n\n".join(
+            self._format_tool_message(message, index)
+            for index, message in enumerate(selected, start=1)
+        )
+
+    def request_exit(self) -> None:
+        self.exit_requested = True
+
+    def mode_label(self) -> str:
+        return "[PLAN]" if self._mode == "plan" else "[DEFAULT]"
+
+    def input_prompt(self) -> str:
+        return f"\n{self.mode_label()} You> "
+
+    def toolbar_text(self) -> str:
+        tokens = self.get_token_status()
+        last = tokens["last"] if tokens["last"] is not None else "-"
+        return (
+            f"{self.mode_label()}  tokens: {last}/{tokens['window']}  "
+            f"permission: {self.permission_context.mode}  memory: {self._memory_toolbar_status()}"
+        )
+
+    def _memory_toolbar_status(self) -> str:
+        if self.memory_manager is None:
+            return "off"
+        if self.state.memory.last_error:
+            return "error"
+        if self.state.memory.pending_updates:
+            return "updating"
+        return "ready"
+
+    def _format_permission_summary(self) -> str:
+        sources: dict[str, int] = {}
+        rules = self.permission_context.session_rules + self.permission_context.rules
+        for rule in rules:
+            sources[rule.source] = sources.get(rule.source, 0) + 1
+        source_text = ", ".join(
+            f"{source}={count}" for source, count in sorted(sources.items())
+        ) or "none"
+        return f"mode={self.permission_context.mode} rules={len(rules)} sources={source_text}"
+
+    def _format_mcp_summary(self) -> str:
+        if self.mcp_manager is None:
+            return "servers=0/0 tools=0 errors=0"
+        return (
+            f"servers={self.mcp_manager.active_server_count}/{self.mcp_manager.server_count}"
+            f" tools={self.mcp_manager.tool_count} errors={len(self.mcp_manager.errors)}"
+        )
+
+    def _format_memory_summary(self, compact: bool = False) -> str:
+        if self.memory_manager is None:
+            return "enabled=false"
+        status = self.memory_manager.status(self.state)
+        error = status.last_error or "none"
+        base = (
+            f"enabled={str(status.enabled).lower()} session={status.session_id}"
+            f" project_notes={status.project_notes} user_notes={status.user_notes}"
+            f" index_bytes={status.index_bytes} pending={status.pending_updates} error={error}"
+        )
+        if compact:
+            return base
+        warnings = "; ".join(status.warnings) if status.warnings else "none"
+        return (
+            f"memory {base} index_lines={status.index_lines}"
+            f" last_update={status.last_update_at or 'none'} warnings={warnings}"
+        )
+
+    def _format_sessions(self) -> str:
+        sessions = self.memory_manager.list_sessions() if self.memory_manager else []
+        if not sessions:
+            return "暂无会话存档\n使用 /session resume <session-id> 恢复指定会话。"
+        lines = ["sessions:"]
+        for session in sessions[:20]:
+            warning_text = f" warnings={len(session.warnings)}" if session.warnings else ""
+            lines.append(
+                f"- {session.session_id} messages={session.message_count}"
+                f" updated={session.updated_at or 'unknown'} title={session.title}{warning_text}"
+            )
+        lines.append("使用 /session resume <session-id> 恢复指定会话。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_resume_report(report) -> str:  # noqa: ANN001
+        lines = [report.message]
+        if report.ok:
+            lines.append(
+                " ".join(
+                    [
+                        f"restored={report.restored_messages}",
+                        f"bad_lines={report.skipped_bad_lines}",
+                        f"truncated={str(report.truncated).lower()}",
+                        f"time_gap={str(report.time_gap_inserted).lower()}",
+                        f"compacted={str(report.compacted).lower()}",
+                    ]
+                )
+            )
+        lines.extend(f"warning: {warning}" for warning in report.warnings)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _parse_last_count(arguments: str) -> int:
+        if not arguments:
+            return 1
+        try:
+            return max(1, min(int(arguments.strip()), 5))
+        except ValueError:
+            return 1
+
+    @staticmethod
+    def _format_tool_message(message, index: int) -> str:  # noqa: ANN001
+        result = message.tool_result
+        header = f"[{index}] {message.tool_name or 'Tool'}: {result.summary}"
+        if message.tool_name == "Bash" and result.data:
+            return "\n".join(
+                [
+                    header,
+                    f"command: {result.data.get('command', '')}",
+                    f"returncode: {result.data.get('returncode', '')}",
+                    "stdout:",
+                    str(result.data.get("stdout", "")),
+                    "stderr:",
+                    str(result.data.get("stderr", "")),
+                ]
+            )
+        if message.tool_name == "Read" and result.data:
+            return "\n".join(
+                [header, f"path: {result.data.get('path', '')}", "content:", str(result.data.get("content", ""))]
+            )
+        detail = result.data if result.ok else (result.error.to_dict() if result.error else {})
+        return f"{header}\n{json.dumps(detail, ensure_ascii=False, indent=2)}"

@@ -125,7 +125,7 @@ class CLIMemoryTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn(session_id, output.getvalue())
-        self.assertIn("/resume <session-id>", output.getvalue())
+        self.assertIn("/session resume <session-id>", output.getvalue())
         self.assertEqual(provider.calls, [])
 
     def test_memory_update_and_rebuild_commands(self) -> None:
