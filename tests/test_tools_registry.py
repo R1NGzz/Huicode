@@ -18,6 +18,16 @@ class BrokenTool:
         raise RuntimeError("boom")
 
 
+class SystemTool:
+    name = "System"
+    description = "system"
+    parameters = {"type": "object", "properties": {}}
+    side_effect = False
+
+    def run(self, args, context):
+        return ToolResult.success({}, "ok")
+
+
 class RegistryTests(unittest.TestCase):
     def test_default_registry_has_six_tools_and_specs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -43,6 +53,16 @@ class RegistryTests(unittest.TestCase):
 
         self.assertEqual({spec.name for spec in specs}, {"Read", "Find", "Search"})
         self.assertEqual(registry.resolve_name("Glob"), "Find")
+
+    def test_system_tool_survives_filters(self) -> None:
+        registry = create_default_registry(Path.cwd())
+        registry.register(SystemTool(), system=True)
+
+        names = {spec.name for spec in registry.to_specs(set())}
+
+        self.assertEqual(names, {"System"})
+        self.assertEqual(registry.system_tool_names(), frozenset({"System"}))
+        self.assertNotIn("System", registry.ordinary_tool_names())
 
     def test_unknown_tool_returns_structured_error(self) -> None:
         result = execute_tool_call(

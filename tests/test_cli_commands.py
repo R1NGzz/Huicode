@@ -10,7 +10,6 @@ from unittest.mock import patch
 from huicode.cli import _create_prompt_session, _run_chat
 from huicode.commands import (
     CommandRegistrationError,
-    REVIEW_PROMPT,
     SlashCommandCompleter,
     create_builtin_registry,
 )
@@ -96,7 +95,7 @@ class CLICommandTests(unittest.TestCase):
         self.assertIn("未知命令 /wat", output.getvalue())
         self.assertIn("输入 /help", output.getvalue())
 
-    def test_review_expands_prompt_and_uses_current_mode(self) -> None:
+    def test_review_skill_uses_isolated_prompt_and_current_mode(self) -> None:
         provider = RecordingProvider()
         output = io.StringIO()
         with patch(
@@ -108,11 +107,11 @@ class CLICommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(provider.calls), 1)
         sent = provider.calls[0]["messages"][-1].content
-        self.assertIn(REVIEW_PROMPT, sent)
-        self.assertIn("本次额外审查重点：Focus On API", sent)
+        self.assertEqual(sent, "Focus On API")
+        self.assertIn("本次额外审查重点：Focus On API", provider.calls[0]["prompt"].dynamic_text())
         self.assertEqual(
             {tool.name for tool in provider.calls[0]["tools"]},
-            {"Read", "Find", "Search"},
+            {"Read", "Find", "Search", "Skill"},
         )
 
     def test_non_tty_prompt_tracks_mode(self) -> None:
@@ -135,7 +134,7 @@ class CLICommandTests(unittest.TestCase):
             _run_chat(provider, self.config)
 
         help_text = output.getvalue()
-        self.assertIn("/review [focus]", help_text)
+        self.assertIn("/review [arguments]", help_text)
         for hidden in ("/resume", "/permissions", "/config", "/context", "/verbose", "/last"):
             self.assertNotIn(hidden, help_text)
 
@@ -177,7 +176,7 @@ class CLICommandTests(unittest.TestCase):
         completion_names = [
             name for name, _ in captured["completer"].registry.completion_entries()
         ]
-        self.assertIn("review", completion_names)
+        self.assertNotIn("review", completion_names)
         self.assertNotIn("resume", completion_names)
 
 

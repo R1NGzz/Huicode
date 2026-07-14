@@ -6,6 +6,7 @@ from typing import Any, Literal
 from huicode.context.state import ContextState
 from huicode.memory.types import MemoryRuntimeState
 from huicode.providers.base import ConversationMessage, ToolCall
+from huicode.skills.types import SkillRuntimeState
 from huicode.tools.base import ToolResult
 
 
@@ -61,6 +62,7 @@ class AgentState:
     last_plan: str = ""
     context: ContextState = field(default_factory=ContextState)
     memory: MemoryRuntimeState = field(default_factory=MemoryRuntimeState)
+    skills: SkillRuntimeState = field(default_factory=SkillRuntimeState)
     cancel_requested: bool = False
     unknown_tool_count: int = 0
     iterations: int = 0

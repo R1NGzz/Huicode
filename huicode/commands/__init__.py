@@ -1,8 +1,9 @@
 from .completion import SlashCommandCompleter
-from .builtin import REVIEW_PROMPT, create_builtin_registry
+from .builtin import create_builtin_registry
 from .dispatcher import CommandDispatcher, InputRouter, RouteKind, RouteResult
 from .parser import CommandParser
 from .registry import CommandRegistrationError, CommandRegistry
+from .skills import registry_with_skill_commands
 from .runtime import CLICommandRuntime
 from .types import (
     CommandAlias,
@@ -32,7 +33,7 @@ __all__ = [
     "RouteKind",
     "RouteResult",
     "SlashCommandCompleter",
-    "REVIEW_PROMPT",
     "create_builtin_registry",
+    "registry_with_skill_commands",
     "normalize_command_name",
 ]

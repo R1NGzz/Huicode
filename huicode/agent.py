@@ -16,6 +16,7 @@ from huicode.config import LLMConfig
 from huicode.prompts import PromptBundle, PromptContext, build_prompt_bundle, enhance_tool_specs, normalize_cache_usage
 from huicode.providers.base import ConversationMessage, Provider, ToolCall
 from huicode.sse import APIError
+from huicode.skills.manager import SkillManager
 from huicode.tools.base import ToolContext, ToolResult
 from huicode.tools.executor import execute_tool_call
 from huicode.tools.registry import ToolRegistry
@@ -62,11 +63,43 @@ def run_agent_loop(
     config: LLMConfig,
     options: AgentOptions,
     memory=None,
+    skill_manager: SkillManager | None = None,
+    provider_override_factory=None,
+) -> Iterator[AgentEvent]:
+    try:
+        yield from _run_agent_loop_impl(
+            provider=provider,
+            registry=registry,
+            context=context,
+            state=state,
+            user_text=user_text,
+            config=config,
+            options=options,
+            memory=memory,
+            skill_manager=skill_manager,
+            provider_override_factory=provider_override_factory,
+        )
+    finally:
+        state.skills.turn_model_override = None
+
+
+def _run_agent_loop_impl(
+    provider: Provider,
+    registry: ToolRegistry,
+    context: ToolContext,
+    state: AgentState,
+    user_text: str,
+    config: LLMConfig,
+    options: AgentOptions,
+    memory=None,
+    skill_manager: SkillManager | None = None,
+    provider_override_factory=None,
 ) -> Iterator[AgentEvent]:
     state.cancel_requested = False
     state.iterations = 0
     state.unknown_tool_count = 0
     empty_response_count = 0
+    override_providers: dict[str, Provider] = {}
     context_manager = ContextManager(context.workspace, config.context)
     turn_start = len(state.messages)
     user_message = ConversationMessage(role="user", content=_build_user_text(user_text, state, options))
@@ -87,12 +120,26 @@ def run_agent_loop(
             },
         )
         try:
+            current_provider = _provider_for_iteration(
+                provider,
+                config,
+                state.skills.turn_model_override,
+                provider_override_factory,
+                override_providers,
+            )
             if memory is not None:
                 memory.refresh_prompt_memory(state)
-            prompt = build_agent_prompt(context=context, registry=registry, state=state, options=options, iteration=iteration)
-            selected_tools = select_tools(registry, options)
+            prompt = build_agent_prompt(
+                context=context,
+                registry=registry,
+                state=state,
+                options=options,
+                iteration=iteration,
+                skill_manager=skill_manager,
+            )
+            selected_tools = select_tools(registry, options, state, skill_manager)
             preparation = context_manager.prepare_before_request(
-                provider=provider,
+                provider=current_provider,
                 state=state,
                 context=context,
                 config=config,
@@ -107,7 +154,7 @@ def run_agent_loop(
             for report in preparation.reports:
                 yield AgentEvent(kind="context", iteration=iteration, data=report.to_dict())
             response = yield from collect_model_response(
-                provider=provider,
+                provider=current_provider,
                 messages=state.messages,
                 tools=selected_tools,
                 prompt=prompt,
@@ -267,10 +314,25 @@ def collect_model_response(
     )
 
 
-def select_tools(registry: ToolRegistry, options: AgentOptions):
+def select_tools(
+    registry: ToolRegistry,
+    options: AgentOptions,
+    state: AgentState | None = None,
+    skill_manager: SkillManager | None = None,
+):
     if options.mode == "plan":
-        return enhance_tool_specs(registry.to_specs(options.read_only_tool_names))
-    return enhance_tool_specs(registry.to_specs())
+        allowed = {
+            name
+            for name in options.read_only_tool_names
+            if registry.resolve_name(name) is not None
+        }
+    else:
+        allowed = set(registry.ordinary_tool_names())
+    if state is not None and skill_manager is not None:
+        skill_allowed = skill_manager.active_allowed_tools(state.skills)
+        if skill_allowed is not None:
+            allowed.intersection_update(skill_allowed)
+    return enhance_tool_specs(registry.to_specs(allowed, include_system=True))
 
 
 def build_agent_prompt(
@@ -279,8 +341,9 @@ def build_agent_prompt(
     state: AgentState,
     options: AgentOptions,
     iteration: int,
+    skill_manager: SkillManager | None = None,
 ) -> PromptBundle:
-    selected_tools = select_tools(registry, options)
+    selected_tools = select_tools(registry, options, state, skill_manager)
     prompt_context = PromptContext(
         workspace=context.workspace,
         platform=platform.platform(),
@@ -296,8 +359,27 @@ def build_agent_prompt(
         memory_enabled=bool(state.memory.session_id),
         memory_index=state.memory.memory_index_text,
         memory_warnings=tuple(state.memory.warnings),
+        active_skill_blocks=(
+            skill_manager.active_prompt_blocks(state.skills) if skill_manager is not None else ()
+        ),
+        skill_catalog=(skill_manager.catalog_items() if skill_manager is not None else ()),
     )
     return build_prompt_bundle(prompt_context)
+
+
+def _provider_for_iteration(provider, config, model_override, factory, cache):  # noqa: ANN001, ANN202
+    if not model_override or model_override == provider.model:
+        return provider
+    if model_override in cache:
+        return cache[model_override]
+    if factory is not None:
+        selected = factory(model_override)
+    else:
+        from huicode.provider_factory import create_provider_with_model
+
+        selected = create_provider_with_model(config, model_override)
+    cache[model_override] = selected
+    return selected
 
 
 def _current_shell() -> str:
@@ -384,6 +466,8 @@ def _plan_mode_denial(registry: ToolRegistry, call: ToolCall, options: AgentOpti
         return None
     resolved_name = registry.resolve_name(call.name)
     if resolved_name is None:
+        return None
+    if resolved_name in registry.system_tool_names():
         return None
     if call.name in options.read_only_tool_names or resolved_name in options.read_only_tool_names:
         return None

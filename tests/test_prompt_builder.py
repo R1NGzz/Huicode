@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from huicode.prompts import PromptContext, PromptInjectionPolicy, build_prompt_bundle
@@ -20,6 +21,22 @@ def make_context(iteration: int = 1, mode: str = "chat") -> PromptContext:
 
 
 class PromptBuilderTests(unittest.TestCase):
+    def test_skill_catalog_is_lightweight_and_active_sop_is_dynamic_first(self) -> None:
+        context = replace(
+            make_context(),
+            active_skill_blocks=(
+                '<huicode_instruction type="active_skill">SECRET SOP</huicode_instruction>',
+            ),
+            skill_catalog=(("review", "Review code", "isolated"),),
+        )
+
+        bundle = build_prompt_bundle(context)
+
+        self.assertIn("SECRET SOP", bundle.dynamic_modules[0].content)
+        self.assertEqual(bundle.dynamic_modules[1].name, "environment")
+        self.assertNotIn("SECRET SOP", bundle.stable_text())
+        self.assertIn("review [isolated]: Review code", bundle.supplemental_text())
+
     def test_environment_uses_special_tag_and_is_dynamic(self) -> None:
         bundle = build_prompt_bundle(make_context())
         self.assertIn('<huicode_context type="environment" scope="turn">', bundle.dynamic_text())

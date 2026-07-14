@@ -1,6 +1,6 @@
 # HuiCode
 
-HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
+HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
 
 ## 能力概览
 
@@ -22,6 +22,7 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - MCP 客户端工具接入
 - 两层上下文压缩
 - 统一 Slash Command 注册、分发和 Tab 补全
+- 两阶段加载的 Skill 系统与 isolated 子会话
 
 ## 工具系统
 
@@ -208,11 +209,11 @@ rules:
 
 ## Slash Command
 
-斜杠命令在用户回车后先于 Agent 解析。本地命令和状态命令不会进入 Agent Loop，也不会消耗模型 Token；只有 `/review` 会把固定审查提示词展开后发送给 Agent。
+斜杠命令在用户回车后先于 Agent 解析。本地命令和状态命令不会进入 Agent Loop，也不会消耗模型 Token。Skill 会自动注册为斜杠命令，并按 shared 或 isolated 模式执行。
 
 命令由统一注册中心提供元数据、帮助、别名、分发和 Tab 补全。命令名大小写不敏感，未知命令会提示 `/help`，不会被当成普通问题发给模型。启动时如果名称或别名冲突，HuiCode 会直接报告命令注册错误并退出。
 
-十个公开命令：
+九个核心公开命令：
 
 ```text
 /help [command]
@@ -224,16 +225,65 @@ rules:
 /memory [update|rebuild]
 /permission [strict|default|permissive]
 /status
-/review [focus]
 ```
 
-命令分三类：
+有效 Skill 会动态追加到公开命令，例如内置的 `/commit [arguments]`、`/review [arguments]` 和 `/test [arguments]`。项目级或用户级同名 Skill 可以覆盖内置版本。
+
+命令分四类：
 
 - 本地命令：查询状态或执行已有管理流程，不进入 Agent。
 - 状态命令：改变模式、权限或当前会话状态，并立即刷新状态栏。
-- 提示词命令：展开预设提示词后进入正常 Agent Loop；当前只有 `/review`。
+- 提示词命令：把预设提示送入正常 Agent Loop，供后续扩展使用。
+- Skill 命令：加载 Skill SOP，shared 模式进入主 Agent，isolated 模式只把摘要回流主历史。
 
 交互终端底部状态栏会显示 `[DEFAULT]` 或 `[PLAN]`，以及最近 Token、权限模式和记忆状态。非交互回退输入会在 `You>` 前显示相同模式标记。Tab 单匹配直接补全，多匹配显示候选菜单；隐藏兼容命令不参与补全。
+
+## Skill 系统
+
+Skill 把可复用的 AI 操作保存成带 YAML frontmatter 的 Markdown。HuiCode 启动时只把名称、说明和执行模式放进轻量目录；模型真正需要时再调用系统级 `Skill` 工具加载完整 SOP，避免把所有指令一次塞进上下文。
+
+Skill 按以下优先级覆盖：
+
+```text
+项目级：<workspace>/.huicode/skills/
+用户级：~/.huicode/skills/
+内置：huicode/skills/builtin/
+```
+
+支持单文件 `<name>.md` 和目录型 `<package>/SKILL.md`。目录型 Skill 可以附带模板、示例、脚本和参考文档；入口必须留在对应 skills 根目录内，符号链接不能用于路径逃逸。
+
+示例：
+
+```markdown
+---
+name: explain-api
+description: 调查并解释指定 API 的调用链
+allowed_tools:
+  - Read
+  - Find
+  - Search
+mode: shared
+history_messages: 0
+model: optional-model-name
+---
+先定位 API 定义、调用方和测试，再解释数据流。
+
+用户关注点：{{args}}
+```
+
+字段说明：
+
+- `name`：唯一小写名称，同时作为 `/<name>` 命令。
+- `description`：启动目录、`/help` 和 Tab 补全显示的一句话说明。
+- `allowed_tools`：普通工具白名单，只能收窄能力，不能绕过 Plan Mode、权限、黑名单或路径沙箱。
+- `mode`：`shared` 复用主历史；`isolated` 使用独立 AgentState，只回流摘要。
+- `history_messages`：isolated 模式带入的最近消息数，工具调用与结果会按协议安全边界成组保留。
+- `model`：可选，只覆盖模型名；URL、密钥、headers、thinking 和上下文配置继续沿用主配置。
+- 正文：完整 SOP；`{{args}}` 会替换为工具调用或 Slash Command 的原始参数。
+
+多个 active shared Skill 同时存在时，普通工具取所有白名单的交集；Plan Mode 再与只读工具取交集。系统 `Skill` 加载工具始终可用，但 Skill 内执行 Read、Bash 等普通工具仍走现有权限系统。
+
+每次顶层输入前 HuiCode 会检查项目级和用户级 Skill 是否变化。合法更新会原子刷新目录、命令和 active SOP；未知工具或命令冲突会保留上一份有效快照，并在 `/status` 显示 reload error。`/clear` 会清除 active Skill、工具限制和当前轮模型覆盖，但不会删除 Skill 文件或目录。
 
 ## Agent Loop
 
@@ -280,7 +330,7 @@ HuiCode 会把系统提示按优先级拼装成固定模块：
 
 固定模块用于约束模型的长期行为：HuiCode 应像终端里的编程助手一样协助代码任务；优先输出安全、正确、可维护的代码；不要编造工具结果；编辑前先读文件；有专用工具时不要用 `Bash` 代替；高风险或破坏性操作需要先获得用户确认；回复默认使用中文、简洁、无 emoji。
 
-可选模块预留为自定义指令、已激活 Skill 和长期记忆。稳定模块会固定排在请求前部，便于供应商侧缓存；动态环境和模式指令会按轮次单独注入，不污染用户消息。
+可选模块包括自定义指令和长期记忆。稳定模块固定排在请求前部，便于供应商侧缓存；active Skill 完整 SOP、动态环境、模式指令和轻量 Skill 目录按轮次作为系统级补充上下文注入，不污染用户消息或稳定缓存。
 
 运行时补充信息使用特殊标签：
 
@@ -292,7 +342,7 @@ HuiCode 会把系统提示按优先级拼装成固定模块：
 
 Plan/DEFAULT 指令注入频率为：首轮完整注入，每 4 轮重复关键约束，其余轮次注入精简提醒。
 
-这些提示词只约束模型行为，不代表实现了新的底层能力。当前 HuiCode 还没有子 Agent、`TaskCreate`、真实 MCP 接入或 `ToolSearch` 工具；模型只能使用工具列表中真实暴露的能力。
+这些提示词只约束模型行为，不代表凭空增加工具。当前 HuiCode 支持 isolated Skill 子会话和真实 MCP 工具，但还没有通用 `TaskCreate` 或 `ToolSearch`；模型只能使用当前工具列表中真实暴露的能力。
 
 ## 缓存 Usage
 
@@ -435,8 +485,10 @@ context:
 - `/session [resume <session-id>|clean]`：列出、恢复或清理会话
 - `/memory [update|rebuild]`：查看、更新长期记忆或重建索引
 - `/permission [strict|default|permissive]`：查看或切换权限模式
-- `/status`：聚合查看模式、Provider、Token、上下文、权限、MCP 和记忆
-- `/review [focus]`：展开固定代码审查提示并交给 Agent，因而会消耗 Token
+- `/status`：聚合查看模式、Provider、Token、上下文、权限、MCP、记忆和 Skill
+- `/commit [arguments]`：运行当前有效的 commit Skill
+- `/review [arguments]`：运行当前有效的 review Skill，默认使用 isolated 子会话
+- `/test [arguments]`：运行当前有效的 test Skill，默认使用 isolated 子会话
 
 为兼容旧用法，`/sessions`、`/resume`、`/permissions`、`/perm`、`/config`、`/context`、`/verbose`、`/last`、`/exit`、`/quit` 仍可使用，但不会出现在 `/help` 或 Tab 补全中。后续破坏性版本可能移除这些隐藏入口。
 
@@ -448,5 +500,6 @@ context:
 - 完整审计日志
 - 操作系统级容器沙箱
 - 用户交互式确认之外的权限 UI
-- 子 Agent 或 `TaskCreate`
+- 通用子 Agent 或 `TaskCreate`
 - `ToolSearch`
+- Skill 市场、远程分发和版本管理

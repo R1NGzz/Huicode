@@ -52,6 +52,8 @@ class PromptContext:
     last_plan: str = ""
     custom_instructions: str = ""
     active_skills: tuple[str, ...] = ()
+    active_skill_blocks: tuple[str, ...] = ()
+    skill_catalog: tuple[tuple[str, str, str], ...] = ()
     long_term_memory: str = ""
     memory_enabled: bool = False
     memory_index: str = ""

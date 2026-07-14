@@ -16,6 +16,7 @@ class CommandType(str, Enum):
     LOCAL = "local"
     STATE = "state"
     PROMPT = "prompt"
+    SKILL = "skill"
 
 
 @dataclass(frozen=True)

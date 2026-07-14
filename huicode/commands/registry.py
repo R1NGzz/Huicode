@@ -48,6 +48,14 @@ class CommandRegistry:
         for spec in specs:
             self.register(spec)
 
+    def clone(self) -> "CommandRegistry":
+        cloned = CommandRegistry()
+        cloned.register_many(self.commands())
+        return cloned
+
+    def reserved_names(self) -> frozenset[str]:
+        return frozenset(self._lookup)
+
     def resolve(self, name: str) -> CommandSpec | None:
         candidate = name.strip()
         if candidate.startswith("/"):

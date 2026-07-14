@@ -14,6 +14,7 @@ from huicode.commands import (
     InputRouter,
     SlashCommandCompleter,
     create_builtin_registry,
+    registry_with_skill_commands,
 )
 from huicode.config import ConfigError, LLMConfig, load_config
 from huicode.context import ContextManager
@@ -29,6 +30,10 @@ from huicode.permissions import (
 )
 from huicode.provider_factory import create_provider
 from huicode.providers.base import Provider
+from huicode.skills.catalog import SkillCatalogBuilder, SkillConfigError
+from huicode.skills.manager import SkillManager, default_skill_roots
+from huicode.skills.runner import SkillRunner
+from huicode.skills.tool import SkillTool
 from huicode.tools.base import ToolContext
 from huicode.tools.registry import create_default_registry
 from huicode.tui import format_permission_request, render_agent_event
@@ -69,7 +74,7 @@ def _run_chat(
 ) -> int:
     workspace = Path.cwd()
     try:
-        command_registry = (command_registry_factory or create_builtin_registry)()
+        base_command_registry = (command_registry_factory or create_builtin_registry)()
     except CommandRegistrationError as exc:
         print(f"命令注册错误: {exc}")
         return 2
@@ -107,6 +112,43 @@ def _run_chat(
         memory_manager = MemoryManager(workspace, config.memory, config, provider)
         for warning in memory_manager.start(state):
             print(f"记忆提示: {warning}")
+    try:
+        skill_manager = SkillManager(
+            SkillCatalogBuilder(
+                default_skill_roots(workspace),
+                tool_registry,
+                base_command_registry.reserved_names(),
+            )
+        )
+        skill_snapshot = skill_manager.initialize()
+        command_registry = registry_with_skill_commands(base_command_registry, skill_snapshot)
+    except (SkillConfigError, CommandRegistrationError) as exc:
+        _close_mcp(mcp_manager)
+        if memory_manager is not None:
+            memory_manager.close()
+        print(f"Skill 配置错误: {exc}")
+        return 2
+
+    runtime_holder = {}
+
+    def run_isolated_skill(name: str, arguments: str):
+        runtime_ref = runtime_holder["runtime"]
+        mode: AgentMode = "plan" if runtime_ref.get_mode() == "plan" else "chat"
+        runner = SkillRunner(
+            provider=provider,
+            registry=tool_registry,
+            context=tool_context,
+            config=config,
+            manager=skill_manager,
+            options=AgentOptions(mode=mode),
+        )
+        return runner.run(
+            name,
+            arguments,
+            parent_messages=state.messages,
+            depth=state.skills.nesting_depth + 1,
+        )
+
     runtime = CLICommandRuntime(
         provider=provider,
         config=config,
@@ -117,6 +159,8 @@ def _run_chat(
         permission_context=permission_context,
         memory_manager=memory_manager,
         mcp_manager=mcp_manager,
+        skill_manager=skill_manager,
+        isolated_skill_runner=run_isolated_skill,
         send_user_message=lambda text, mode, show_usage: _run_request(
             provider,
             tool_registry,
@@ -127,7 +171,13 @@ def _run_chat(
             mode,
             show_usage,
             memory_manager,
+            skill_manager,
         ),
+    )
+    runtime_holder["runtime"] = runtime
+    tool_registry.register(
+        SkillTool(skill_manager, state.skills, isolated_runner=run_isolated_skill),
+        system=True,
     )
     prompt_session = _create_prompt_session(command_registry, runtime)
     confirmer.prompt_session = prompt_session
@@ -142,9 +192,19 @@ def _run_chat(
         )
         for error in mcp_manager.errors:
             print(f"MCP server {error.server} skipped: {error.message}")
+    print(
+        "Skills "
+        f"effective={len(skill_snapshot.definitions)} "
+        f"overridden={skill_snapshot.overridden_count} "
+        f"skipped={skill_snapshot.skipped_count} "
+        f"warnings={len(skill_snapshot.warnings)}"
+    )
+    for warning in skill_snapshot.warnings:
+        print(f"Skill warning: {warning.display()}")
     print(f"HuiCode 已连接: {provider.name}:{provider.model}")
     print("输入 /help 查看命令；/plan 进入计划模式，/do 返回默认模式。")
 
+    last_reload_error = ""
     while True:
         try:
             user_text = _read_user_input(prompt_session, runtime)
@@ -154,6 +214,28 @@ def _run_chat(
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
             continue
+
+        if skill_manager.reload_if_changed(state.skills):
+            try:
+                command_registry = registry_with_skill_commands(
+                    base_command_registry,
+                    skill_manager.snapshot,
+                )
+            except CommandRegistrationError as exc:
+                state.skills.reload_error = str(exc)
+            else:
+                command_context.registry = command_registry
+                router = InputRouter(command_registry)
+                if prompt_session is not None:
+                    completer = getattr(prompt_session, "completer", None)
+                    if hasattr(completer, "set_registry"):
+                        completer.set_registry(command_registry)
+                runtime.refresh_status()
+        if state.skills.reload_error and state.skills.reload_error != last_reload_error:
+            print(f"Skill 热更新失败，继续使用上一有效版本: {state.skills.reload_error}")
+            last_reload_error = state.skills.reload_error
+        elif not state.skills.reload_error:
+            last_reload_error = ""
 
         router.route(user_text, command_context)
         if runtime.exit_requested:
@@ -241,6 +323,7 @@ def _run_request(
     mode: AgentMode,
     show_usage: bool,
     memory_manager: MemoryManager | None = None,
+    skill_manager: SkillManager | None = None,
 ) -> None:
     options = AgentOptions(mode=mode)
     last_user_count = len(state.messages)
@@ -253,6 +336,7 @@ def _run_request(
         config=config,
         options=options,
         memory=memory_manager,
+        skill_manager=skill_manager,
     ):
         if event.kind == "thinking" and not config.thinking.show:
             continue

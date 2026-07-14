@@ -11,16 +11,55 @@ def build_prompt_bundle(
     policy = policy or PromptInjectionPolicy()
     stable_modules = fixed_prompt_modules() + optional_prompt_modules(
         custom_instructions=context.custom_instructions,
-        active_skills=context.active_skills,
+        active_skills=(),
         long_term_memory=context.long_term_memory,
     )
-    dynamic_modules = (_environment_module(context),)
-    supplemental_modules = (_mode_instruction_module(context, policy),) + _memory_modules(context)
+    dynamic_modules = _active_skill_modules(context) + (_environment_module(context),)
+    supplemental_modules = (
+        (_mode_instruction_module(context, policy),)
+        + _memory_modules(context)
+        + _skill_catalog_modules(context)
+    )
     return PromptBundle(
         stable_modules=stable_modules,
         dynamic_modules=dynamic_modules,
         supplemental_modules=supplemental_modules,
         metadata={"mode": context.mode, "iteration": context.iteration},
+    )
+
+
+def _active_skill_modules(context: PromptContext) -> tuple[PromptModule, ...]:
+    return tuple(
+        PromptModule(
+            name=f"active_skill_{index}",
+            content=block,
+            stable=False,
+            cacheable=False,
+        )
+        for index, block in enumerate(context.active_skill_blocks, start=1)
+        if block.strip()
+    )
+
+
+def _skill_catalog_modules(context: PromptContext) -> tuple[PromptModule, ...]:
+    if not context.skill_catalog:
+        return ()
+    lines = "\n".join(
+        f"- {name} [{mode}]: {description}"
+        for name, description, mode in context.skill_catalog
+    )
+    return (
+        PromptModule(
+            name="skill_catalog",
+            content=(
+                '<huicode_context type="skill_catalog" scope="session">\n'
+                f"{lines}\n"
+                "需要使用某个 Skill 时，调用系统工具 Skill(name, arguments) 加载完整指令。\n"
+                "</huicode_context>"
+            ),
+            stable=False,
+            cacheable=False,
+        ),
     )
 
 

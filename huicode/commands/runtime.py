@@ -12,6 +12,9 @@ from huicode.memory.manager import MemoryManager
 from huicode.mcp import MCPManager
 from huicode.permissions import PermissionContext
 from huicode.providers.base import Provider
+from huicode.providers.base import ConversationMessage
+from huicode.skills.manager import SkillManager
+from huicode.skills.types import SkillRunResult
 from huicode.tools.base import ToolContext
 from huicode.tools.registry import ToolRegistry
 
@@ -35,6 +38,8 @@ class CLICommandRuntime:
         send_user_message: SendUserMessage,
         memory_manager: MemoryManager | None = None,
         mcp_manager: MCPManager | None = None,
+        skill_manager: SkillManager | None = None,
+        isolated_skill_runner: Callable[[str, str], SkillRunResult] | None = None,
         output: TextIO | None = None,
     ) -> None:
         self.provider = provider
@@ -46,6 +51,8 @@ class CLICommandRuntime:
         self.permission_context = permission_context
         self.memory_manager = memory_manager
         self.mcp_manager = mcp_manager
+        self.skill_manager = skill_manager
+        self.isolated_skill_runner = isolated_skill_runner
         self.output = output or sys.stdout
         self._send_user_message = send_user_message
         self._mode: CommandMode = "default"
@@ -117,11 +124,46 @@ class CLICommandRuntime:
         self.state.unknown_tool_count = 0
         self.state.iterations = 0
         self.context_manager.reset(self.state)
+        if self.skill_manager is not None:
+            self.skill_manager.clear_state(self.state.skills)
         if self.memory_manager is not None:
             self.memory_manager.clear_current_session(self.state)
         self._mode = "default"
         self.refresh_status()
         return "本次工作上下文和计划状态已清空，已开启新会话。"
+
+    def run_skill(self, name: str, arguments: str) -> str:
+        if self.skill_manager is None:
+            return "Skill 系统未启用"
+        definition = self.skill_manager.get(name)
+        if definition is None:
+            return f"Skill {name} 已不存在，请重试。"
+        if definition.mode == "shared":
+            self.skill_manager.activate_shared(self.state.skills, name, arguments)
+            task = arguments or f"执行 Skill {name}"
+            self.send_user_message(task)
+            return ""
+        if self.isolated_skill_runner is None:
+            return f"Skill {name} 的隔离执行器不可用"
+        turn_start = len(self.state.messages)
+        request = ConversationMessage(
+            role="user",
+            content=f'<huicode_context type="skill_request" name="{name}">{arguments}</huicode_context>',
+        )
+        self.state.messages.append(request)
+        if self.memory_manager is not None:
+            self.memory_manager.record_message(self.state, request)
+        result = self.isolated_skill_runner(name, arguments)
+        response = ConversationMessage(role="assistant", content=result.summary)
+        self.state.messages.append(response)
+        if self.memory_manager is not None:
+            self.memory_manager.record_message(self.state, response)
+            if result.ok:
+                mode = "plan" if self._mode == "plan" else "chat"
+                self.memory_manager.schedule_update_after_final(self.state, mode, turn_start)
+        self.refresh_status()
+        prefix = "完成" if result.ok else "失败"
+        return f"Skill {name} {prefix}: {result.summary}"
 
     def session(self, arguments: str) -> str:
         if self.memory_manager is None:
@@ -177,8 +219,21 @@ class CLICommandRuntime:
             f"permission: {self._format_permission_summary()}",
             f"mcp: {self._format_mcp_summary()}",
             f"memory: {self._format_memory_summary(compact=True)}",
+            f"skills: {self._format_skill_summary()}",
         ]
         return "\n".join(lines)
+
+    def _format_skill_summary(self) -> str:
+        if self.skill_manager is None:
+            return "enabled=false"
+        snapshot = self.skill_manager.snapshot
+        active = ",".join(self.state.skills.active) or "none"
+        allowed = self.skill_manager.active_allowed_tools(self.state.skills)
+        tools = ",".join(sorted(allowed)) if allowed is not None else "base"
+        return (
+            f"discovered={len(snapshot.definitions)} active={active} "
+            f"reload_errors={self.skill_manager.reload_errors} tools={tools}"
+        )
 
     def context_status(self) -> str:
         state = self.state.context
@@ -228,7 +283,8 @@ class CLICommandRuntime:
         last = tokens["last"] if tokens["last"] is not None else "-"
         return (
             f"{self.mode_label()}  tokens: {last}/{tokens['window']}  "
-            f"permission: {self.permission_context.mode}  memory: {self._memory_toolbar_status()}"
+            f"permission: {self.permission_context.mode}  memory: {self._memory_toolbar_status()} "
+            f"skills: {len(self.state.skills.active)}"
         )
 
     def _memory_toolbar_status(self) -> str:

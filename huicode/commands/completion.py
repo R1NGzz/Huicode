@@ -15,6 +15,9 @@ class SlashCommandCompleter(Completer):  # type: ignore[misc]
     def __init__(self, registry: CommandRegistry) -> None:
         self.registry = registry
 
+    def set_registry(self, registry: CommandRegistry) -> None:
+        self.registry = registry
+
     def get_completions(self, document: Document, complete_event):  # noqa: ANN001
         if Completion is None:
             return

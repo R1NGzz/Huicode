@@ -5,7 +5,6 @@ from huicode.commands import (
     CommandDispatcher,
     CommandParser,
     CommandType,
-    REVIEW_PROMPT,
     create_builtin_registry,
 )
 
@@ -76,6 +75,10 @@ class FakeRuntime:
     def request_exit(self):
         self.exit_requested = True
 
+    def run_skill(self, name, arguments):  # noqa: ANN001
+        self.calls.append(("skill", name, arguments))
+        return f"skill:{name}:{arguments}"
+
 
 class BuiltinCommandTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -88,14 +91,14 @@ class BuiltinCommandTests(unittest.TestCase):
     def run_command(self, text: str):
         return self.dispatcher.dispatch(self.parser.parse(text), self.context)
 
-    def test_registers_exactly_ten_visible_commands_with_all_types(self) -> None:
+    def test_registers_nine_core_visible_commands(self) -> None:
         visible = self.registry.visible_commands()
 
         self.assertEqual(
             [spec.name for spec in visible],
-            ["help", "compact", "clear", "plan", "do", "session", "memory", "permission", "status", "review"],
+            ["help", "compact", "clear", "plan", "do", "session", "memory", "permission", "status"],
         )
-        self.assertEqual({spec.command_type for spec in visible}, set(CommandType))
+        self.assertEqual({spec.command_type for spec in visible}, {CommandType.LOCAL, CommandType.STATE})
         self.assertTrue(all(spec.description and spec.usage and spec.handler for spec in visible))
 
     def test_help_groups_visible_commands_and_hides_compatibility(self) -> None:
@@ -104,19 +107,17 @@ class BuiltinCommandTests(unittest.TestCase):
 
         self.assertIn("本地命令", text)
         self.assertIn("状态命令", text)
-        self.assertIn("提示词命令", text)
-        self.assertIn("/review", text)
+        self.assertNotIn("Skill 命令", text)
         self.assertNotIn("/resume", text)
         self.assertNotIn("/exit", text)
 
     def test_help_detail_and_hidden_rejection(self) -> None:
-        self.run_command("/help review")
+        self.run_command("/help permission")
         detail = self.runtime.messages[-1][0]
         self.run_command("/help resume")
 
-        self.assertIn("/review [focus]", detail)
-        self.assertIn("类型: 提示词", detail)
-        self.assertIn("参数: [focus]", detail)
+        self.assertIn("/permission", detail)
+        self.assertIn("类型: 状态", detail)
         self.assertTrue(self.runtime.messages[-1][1])
 
     def test_plan_and_do_only_switch_mode(self) -> None:
@@ -155,14 +156,6 @@ class BuiltinCommandTests(unittest.TestCase):
         self.assertIn(("permission", "strict"), self.runtime.calls)
         self.assertIn(("status", ""), self.runtime.calls)
         self.assertEqual(self.runtime.sent, [])
-
-    def test_review_sends_fixed_prompt_and_focus(self) -> None:
-        self.run_command("/review Focus On API")
-
-        self.assertEqual(len(self.runtime.sent), 1)
-        self.assertIn(REVIEW_PROMPT, self.runtime.sent[0])
-        self.assertIn("本次额外审查重点：Focus On API", self.runtime.sent[0])
-        self.assertEqual(self.runtime.calls, [])
 
     def test_hidden_compatibility_commands_delegate(self) -> None:
         for command in (

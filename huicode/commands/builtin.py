@@ -5,13 +5,6 @@ from .types import CommandResult, CommandSpec, CommandType, ParsedCommand
 from .ui import CommandContext
 
 
-REVIEW_PROMPT = (
-    "请以代码审查模式检查当前项目或当前改动。优先发现可复现的缺陷、行为回归、"
-    "协议或安全风险，以及缺失的关键测试。先调查相关代码和改动，再按严重程度给出"
-    "带文件定位的发现；如果没有发现问题，明确说明并指出剩余测试风险。不要主动修改代码。"
-)
-
-
 def create_builtin_registry() -> CommandRegistry:
     registry = CommandRegistry()
     registry.register_many(
@@ -46,14 +39,6 @@ def create_builtin_registry() -> CommandRegistry:
                 "[strict|default|permissive]",
             ),
             _spec("status", "查看 HuiCode 运行状态", "/status", CommandType.LOCAL, _status),
-            _spec(
-                "review",
-                "让 Agent 审查当前代码或改动",
-                "/review [focus]",
-                CommandType.PROMPT,
-                _review,
-                "[focus]",
-            ),
         )
     )
     registry.register_many(
@@ -129,6 +114,7 @@ def _help(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
         (CommandType.LOCAL, "本地命令"),
         (CommandType.STATE, "状态命令"),
         (CommandType.PROMPT, "提示词命令"),
+        (CommandType.SKILL, "Skill 命令"),
     )
     lines: list[str] = []
     visible = context.registry.visible_commands()
@@ -205,14 +191,6 @@ def _status(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
     return invalid or CommandResult(message=context.services.status())
 
 
-def _review(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
-    prompt = REVIEW_PROMPT
-    if parsed.arguments:
-        prompt += f"\n\n本次额外审查重点：{parsed.arguments}"
-    context.ui.send_user_message(prompt)
-    return CommandResult()
-
-
 def _legacy_sessions(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
     return _session(
         ParsedCommand(parsed.raw, "session", parsed.arguments),
@@ -265,4 +243,5 @@ def _type_label(command_type: CommandType) -> str:
         CommandType.LOCAL: "本地",
         CommandType.STATE: "状态",
         CommandType.PROMPT: "提示词",
+        CommandType.SKILL: "Skill",
     }[command_type]

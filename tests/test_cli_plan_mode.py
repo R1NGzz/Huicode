@@ -52,7 +52,7 @@ class CLIPlanModeTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         tool_names = {tool.name for tool in provider.calls[0]["tools"]}
-        self.assertEqual(tool_names, {"Read", "Find", "Search"})
+        self.assertEqual(tool_names, {"Read", "Find", "Search", "Skill"})
 
     def test_do_returns_to_default_without_injecting_recent_plan(self) -> None:
         provider = InspectableProvider()
@@ -78,7 +78,10 @@ class CLIPlanModeTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(provider.calls[0]["messages"][-1].content, "分析一下 CLI 入口")
-        self.assertEqual({tool.name for tool in provider.calls[0]["tools"]}, {"Read", "Find", "Search"})
+        self.assertEqual(
+            {tool.name for tool in provider.calls[0]["tools"]},
+            {"Read", "Find", "Search", "Skill"},
+        )
 
     def test_clear_resets_mode_to_default(self) -> None:
         provider = InspectableProvider()

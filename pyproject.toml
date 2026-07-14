@@ -9,7 +9,7 @@ description = "HuiCode: a streaming command-line AI assistant."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "HuiCode" }]
-dependencies = ["rich>=13", "prompt_toolkit>=3"]
+dependencies = ["rich>=13", "prompt_toolkit>=3", "PyYAML>=6"]
 
 [project.scripts]
 huicode = "huicode.cli:main"
@@ -17,3 +17,6 @@ huicode = "huicode.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["huicode*"]
+
+[tool.setuptools.package-data]
+"huicode.skills" = ["builtin/*/SKILL.md"]
