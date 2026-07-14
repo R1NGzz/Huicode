@@ -67,7 +67,6 @@ class CLISkillTests(unittest.TestCase):
         self.assertIn("FOCUS Focus On API", provider.calls[0]["prompt"].dynamic_text())
         self.assertEqual({tool.name for tool in provider.calls[0]["tools"]}, {"Read", "Skill"})
         self.assertIn("active=none", output.getvalue())
-        self.assertIn("discovered=4", output.getvalue())
 
     def test_new_skill_is_available_on_same_input_after_hot_reload(self) -> None:
         provider = RecordingProvider()

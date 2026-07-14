@@ -625,6 +625,77 @@ Skill 系统要求加载工具在 Plan Mode 和工具白名单收窄后始终可
 - 系统控制工具要明确它能修改哪些内部状态，以及为什么可以绕过某一层；不能给它通用权限旁路。
 - 验收至少覆盖默认、strict、Plan Mode 及其组合，确认控制工具可达、业务工具不扩权。
 
+## 踩坑 24：权限确认的临时补全设置永久污染 PromptSession
+
+现象：
+
+HuiCode 刚启动时输入 `/` 会显示命令候选；经过几轮对话和一次权限确认后，再输入 `/` 不再自动弹出任何提示。
+
+根因：
+
+- 权限输入复用了主 `PromptSession`，调用时传入 `complete_while_typing=False`。
+- prompt_toolkit 的 `PromptSession.prompt()` 参数会写回 Session 并对后续 prompt 持续生效，不是仅本次调用的临时选项。
+- 传入 `completer=None` 也不会清空 completer；prompt_toolkit 规定 `None` 表示保留当前值，应使用 `DummyCompleter`。
+- 原测试只检查权限 prompt 收到了 false，没有检查下一次用户输入是否恢复自动补全。
+
+后来补救：
+
+- 权限确认前保存 completer 和 `complete_while_typing`，使用 `DummyCompleter` 关闭本次候选。
+- 在 `finally` 中恢复原 Session 状态，拒绝、异常和正常返回路径都不会污染下一轮。
+- 回归测试模拟 prompt_toolkit 的持久写回行为，并断言权限确认后原 completer 对象和自动补全开关均恢复。
+
+以后写 spec 要补：
+
+- 复用交互 Session 做子提示时，要核对框架参数是调用级还是会话级。
+- 权限、搜索、选择菜单等临时输入不仅要验收自身行为，还要验收返回主输入后的状态恢复。
+
+## 踩坑 25：永久允许多行命令把权限 YAML 写坏，导致下次启动失败
+
+现象：
+
+用户用多行 PowerShell here-string 安装 Skill，并在权限确认选择 `always`。当次命令成功，但下次启动报“权限配置第 29 行应为 key: value 格式”，HuiCode 未进入 TUI；随后在 PowerShell 输入 `/help` 只会得到系统命令不存在错误。
+
+根因：
+
+- `always` 会把完整命令作为权限规则 key 追加到 YAML。
+- 权限配置是单行解析器，序列化器却把命令中的真实换行原样写入单引号 key，破坏后续行结构。
+- 原测试只覆盖引号、冒号和 Windows 路径，没有覆盖多行 shell 命令的持久化与重启回读。
+
+后来补救：
+
+- 多行规则 key 先用 UTF-8 URL-safe Base64 编码成单行并加内部前缀，加载时再严格解码为原始规则。
+- 新增“追加后文件只有三行、重启加载后 raw 完全一致”的 round-trip 测试。
+- 删除当前项目权限文件中已执行完且无复用价值的损坏安装规则，真实 loader 成功读回 26 条规则。
+
+以后写 spec 要补：
+
+- 任何持久化 shell 命令的配置格式都要覆盖换行、引号、冒号、反斜杠和非 ASCII 字符。
+- “本次成功”不代表 `always` 成功，必须用写入后的真实 loader 回读模拟下次启动。
+- CLI 启动失败时要明确用户仍在系统 shell，斜杠命令只有进入 HuiCode TUI 后才有效。
+
+## 踩坑 26：Windows UTF-8 BOM 让合法 Skill 被误判为缺少 frontmatter
+
+现象：
+
+安装生成的 `SKILL.md` 肉眼第一行是 `---`，但 Skill 解析器报告“缺少开头 YAML frontmatter 边界”。
+
+根因：
+
+- Windows/.NET 写出的 UTF-8 文件带 BOM，真实首字符是 `\ufeff`，随后才是 `---`。
+- 解析器使用 `utf-8` 读取并要求第一行严格等于 `---`，没有吸收 BOM。
+- 原 Skill 测试只用无 BOM 的 Python UTF-8 文件。
+
+后来补救：
+
+- Skill 入口改用 `utf-8-sig` 读取，同时兼容有 BOM 和无 BOM UTF-8。
+- 新增 Windows BOM 入口测试。
+- 用真实用户级 `frontend-design/SKILL.md` 构建 Catalog，成功发现 4 个有效 Skill。
+
+以后写 spec 要补：
+
+- Windows 用户可编辑的 Markdown/YAML/JSONL 入口必须覆盖 UTF-8 BOM。
+- 文件格式错误要检查原始首字节，不能只根据终端肉眼内容判断。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -653,6 +724,9 @@ Skill 系统要求加载工具在 Plan Mode 和工具白名单收窄后始终可
 22. Windows subprocess 是否覆盖 UTF-8、中文、非本地编码字符和空输出？
 23. 每个斜杠命令的裸命令、参数错误和 Provider 零调用是否都有测试？
 24. 声明始终可用的系统工具是否同时通过工具暴露、模式检查和权限执行三层验证？
+25. 临时复用 TUI Session 后，补全器、历史、模式和输入开关是否恢复？
+26. 持久化 shell 命令是否覆盖多行内容并在写入后用真实 loader 回读？
+27. Windows 用户生成的文本入口是否兼容 UTF-8 BOM？
 
 ## 维护约定
 

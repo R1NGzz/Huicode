@@ -36,6 +36,16 @@ class SkillParserTests(unittest.TestCase):
         self.assertEqual(definition.model, "alternate-model")
         self.assertEqual(render_skill_body(definition, "Focus {{x}}"), "Review this request: Focus {{x}}")
 
+    def test_accepts_utf8_bom_from_windows_editors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry = root / "review.md"
+            entry.write_text(VALID, encoding="utf-8-sig")
+
+            definition = parse_skill_file(entry, root, "project")
+
+        self.assertEqual(definition.name, "review")
+
     def test_rejects_invalid_documents(self) -> None:
         cases = {
             "no-frontmatter": "name: x",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ from huicode.permissions.rules import parse_rule_key
 
 VALID_MODES = {"strict", "default", "permissive"}
 VALID_ACTIONS = {"allow", "deny"}
+_ENCODED_RULE_PREFIX = "__huicode_b64__:"
 
 
 @dataclass(frozen=True)
@@ -143,12 +146,21 @@ def _parse_scalar(value: str) -> Any:
 
 
 def _quote_key(value: str) -> str:
+    if "\n" in value or "\r" in value:
+        encoded = base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")
+        value = _ENCODED_RULE_PREFIX + encoded
     return "'" + value.replace("'", "''") + "'"
 
 
 def _unquote_key(value: str) -> str:
     if value.startswith("'") and value.endswith("'"):
-        return value[1:-1].replace("''", "'")
-    if value.startswith('"') and value.endswith('"'):
-        return value[1:-1].replace('\\"', '"')
+        value = value[1:-1].replace("''", "'")
+    elif value.startswith('"') and value.endswith('"'):
+        value = value[1:-1].replace('\\"', '"')
+    if value.startswith(_ENCODED_RULE_PREFIX):
+        encoded = value[len(_ENCODED_RULE_PREFIX) :]
+        try:
+            return base64.b64decode(encoded, altchars=b"-_", validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise PermissionConfigError("权限规则包含损坏的多行编码") from exc
     return value

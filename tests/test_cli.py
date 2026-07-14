@@ -244,19 +244,26 @@ class CLITests(unittest.TestCase):
         class FakePromptSession:
             def __init__(self) -> None:
                 self.calls = []
+                self.completer = object()
+                self.complete_while_typing = True
 
             def prompt(self, prompt, **kwargs):  # noqa: ANN001
                 self.calls.append((prompt, kwargs))
+                self.completer = kwargs["completer"]
+                self.complete_while_typing = kwargs["complete_while_typing"]
                 return "o"
 
         session = FakePromptSession()
+        original_completer = session.completer
         confirmer = ConsolePermissionConfirmer(session)
 
         answer = confirmer._read_permission_input()
 
         self.assertEqual(answer, "o")
-        self.assertIsNone(session.calls[0][1]["completer"])
+        self.assertIsNotNone(session.calls[0][1]["completer"])
         self.assertFalse(session.calls[0][1]["complete_while_typing"])
+        self.assertTrue(session.complete_while_typing)
+        self.assertIs(session.completer, original_completer)
 
     def test_mcp_tools_are_registered_and_config_summary_hides_secrets(self) -> None:
         class ToolRecordingProvider(FakeProvider):

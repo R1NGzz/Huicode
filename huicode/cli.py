@@ -40,9 +40,11 @@ from huicode.tui import format_permission_request, render_agent_event
 
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import DummyCompleter
     from prompt_toolkit.history import InMemoryHistory
 except ImportError:  # pragma: no cover - prompt_toolkit 是交互增强，缺失时回退 input()
     PromptSession = None
+    DummyCompleter = None
     InMemoryHistory = None
 
 
@@ -289,11 +291,17 @@ class ConsolePermissionConfirmer:
         prompt = "Permission [d/o/s/a, enter=deny]> "
         if self.prompt_session is None:
             return input(prompt)
-        return self.prompt_session.prompt(
-            prompt,
-            completer=None,
-            complete_while_typing=False,
-        )
+        previous_completer = self.prompt_session.completer
+        previous_complete_while_typing = self.prompt_session.complete_while_typing
+        try:
+            return self.prompt_session.prompt(
+                prompt,
+                completer=DummyCompleter() if DummyCompleter is not None else None,
+                complete_while_typing=False,
+            )
+        finally:
+            self.prompt_session.completer = previous_completer
+            self.prompt_session.complete_while_typing = previous_complete_while_typing
 
 
 def _close_mcp(manager: MCPManager | None) -> None:

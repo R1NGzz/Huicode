@@ -29,7 +29,7 @@ def parse_skill_file(
     package_root = entry.parent
     _resolve_within(package_root, source_root, "Skill 根目录")
     try:
-        text = entry.read_text(encoding="utf-8")
+        text = entry.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         raise SkillParseError(f"无法读取 Skill: {exc}") from exc
     metadata, body = _split_frontmatter(text)

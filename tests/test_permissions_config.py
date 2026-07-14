@@ -12,6 +12,26 @@ from huicode.permissions import PermissionConfigError
 
 
 class PermissionConfigTests(unittest.TestCase):
+    def test_multiline_rule_is_encoded_on_one_line_and_roundtrips(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "permissions.yaml"
+            raw = 'Bash(powershell -Command @"\nWrite-Host test\n"@)'
+            rule = PermissionRule("Bash", 'powershell -Command @"\nWrite-Host test\n"@', "allow", raw=raw)
+
+            append_persistent_rule(path, rule)
+            text = path.read_text(encoding="utf-8")
+            loaded = load_permission_config(
+                PermissionConfigPaths(
+                    user=Path(directory) / "missing-user.yaml",
+                    project=Path(directory) / "missing-project.yaml",
+                    local=path,
+                )
+            )
+
+        self.assertEqual(len(text.splitlines()), 3)
+        self.assertIn("__huicode_b64__:", text)
+        self.assertEqual(loaded.rules[0].raw, raw)
+
     def test_loads_and_prioritizes_three_layers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
