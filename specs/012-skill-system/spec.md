@@ -183,6 +183,7 @@ allowed_tools: Read, Find, Search, Bash
 ## Slash Command 集成
 
 - 每个优先级解析后的有效 Skill 自动注册为可见短命令 `/<name> [arguments]`。
+- 核心本地命令 `/skill [name]` 列出当前有效/激活 Skill 或显示单个 Skill 详情，不调用 Provider。
 - 命令说明来自 Skill description，参数提示统一为 `[arguments]`，命令类型为 PROMPT/SKILL 执行入口。
 - shared Skill 命令激活 Skill 后进入主 Agent；isolated Skill 命令直接运行 Skill Runner 并显示/记录摘要。
 - Skill 命令参与 `/help` 和 Tab 补全，热更新后帮助和补全同步变化。
@@ -231,7 +232,7 @@ allowed_tools: Read, Find, Search, Bash
 - F9：shared 模式复用主历史，isolated 模式使用独立历史并只回流摘要。
 - F10：isolated 历史选择保持 Provider 工具消息配对合法，并限制嵌套深度。
 - F11：可选 model 只覆盖模型名，并按 shared 当前轮或 isolated 子会话生效。
-- F12：有效 Skill 自动注册 Slash Command，帮助和补全随热更新同步。
+- F12：有效 Skill 自动注册 Slash Command，帮助和补全随热更新同步；`/skill [name]` 提供本地目录查看入口。
 - F13：每次顶层输入前检测热更新，失败时原子保留上一有效快照。
 - F14：`/clear` 清除激活 Skill、工具限制和轮次模型覆盖。
 - F15：提供 commit、review、test 三个内置目录型样板。
@@ -272,7 +273,7 @@ allowed_tools: Read, Find, Search, Bash
 - AC8：shared Skill 的消息、工具调用、结果和 final 保留在主历史；当前轮 model 覆盖结束后恢复主模型。
 - AC9：isolated Skill 使用独立 AgentState，按 history_messages 带入协议安全历史，主历史只收到请求与摘要或 ToolResult。
 - AC10：isolated Skill 的错误、取消、迭代上限和嵌套深度超限作为结构化失败回流，不崩溃主 Agent。
-- AC11：有效 Skill 自动出现在 `/help` 和 Tab 补全；Slash Command 可执行 shared/isolated Skill，参数保留大小写。
+- AC11：有效 Skill 自动出现在 `/help` 和 Tab 补全；`/skill` 能列出已加载/激活 Skill；Slash Command 可执行 shared/isolated Skill，参数保留大小写。
 - AC12：项目或用户 review 覆盖内置 review；硬编码 REVIEW_PROMPT 和旧 review handler 被移除。
 - AC13：新增、修改、删除 Skill 后，下一次顶层输入前目录、命令和 active state 原子更新；非法全局快照保留旧版本。
 - AC14：`/clear` 后 active Skill 为空、工具列表恢复基础模式、模型覆盖清除，但 Skill 文件和 catalog 仍存在。

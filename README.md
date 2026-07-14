@@ -213,7 +213,7 @@ rules:
 
 命令由统一注册中心提供元数据、帮助、别名、分发和 Tab 补全。命令名大小写不敏感，未知命令会提示 `/help`，不会被当成普通问题发给模型。启动时如果名称或别名冲突，HuiCode 会直接报告命令注册错误并退出。
 
-九个核心公开命令：
+十个核心公开命令：
 
 ```text
 /help [command]
@@ -225,6 +225,7 @@ rules:
 /memory [update|rebuild]
 /permission [strict|default|permissive]
 /status
+/skill [name]
 ```
 
 有效 Skill 会动态追加到公开命令，例如内置的 `/commit [arguments]`、`/review [arguments]` 和 `/test [arguments]`。项目级或用户级同名 Skill 可以覆盖内置版本。
@@ -486,6 +487,7 @@ context:
 - `/memory [update|rebuild]`：查看、更新长期记忆或重建索引
 - `/permission [strict|default|permissive]`：查看或切换权限模式
 - `/status`：聚合查看模式、Provider、Token、上下文、权限、MCP、记忆和 Skill
+- `/skill [name]`：列出已加载/已激活 Skill，或查看指定 Skill 的来源、模式和工具白名单
 - `/commit [arguments]`：运行当前有效的 commit Skill
 - `/review [arguments]`：运行当前有效的 review Skill，默认使用 isolated 子会话
 - `/test [arguments]`：运行当前有效的 test Skill，默认使用 isolated 子会话

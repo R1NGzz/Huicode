@@ -6,6 +6,7 @@ from pathlib import Path
 from huicode.tools.registry import ToolRegistry
 
 from .discovery import discover_skill_layer
+from .parser import SkillDependencyError, ensure_skill_dependencies
 from .types import SkillCatalogSnapshot, SkillDefinition, SkillSource
 
 
@@ -25,6 +26,10 @@ class SkillCatalogBuilder:
         self.reserved_commands = {name.lower() for name in reserved_commands}
 
     def build(self, generation: int = 1) -> SkillCatalogSnapshot:
+        try:
+            ensure_skill_dependencies()
+        except SkillDependencyError as exc:
+            raise SkillConfigError(str(exc)) from exc
         merged: dict[str, SkillDefinition] = {}
         fingerprints = []
         warnings = []

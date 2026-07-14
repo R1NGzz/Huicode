@@ -284,6 +284,7 @@
 - isolated 命令直接运行 Runner，只显示并记录摘要。
 - `/help` 和补全动态读取当前有效 Skill；隐藏项规则保持不变。
 - 删除硬编码 `REVIEW_PROMPT` 和旧 review handler，由有效 review Skill 注册 `/review`。
+- 新增 `/skill [name]` 本地命令，列出目录/激活状态或显示单项详情，并断言 Provider 零调用。
 
 验证：
 

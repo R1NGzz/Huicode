@@ -3,7 +3,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from huicode.skills.parser import SkillParseError, parse_skill_file, render_skill_body
+from huicode.skills.parser import (
+    SkillDependencyError,
+    SkillParseError,
+    parse_skill_file,
+    render_skill_body,
+)
 
 
 VALID = """---
@@ -71,7 +76,7 @@ class SkillParserTests(unittest.TestCase):
             entry = root / "review.md"
             entry.write_text(VALID, encoding="utf-8")
             with patch("huicode.skills.parser.yaml", None):
-                with self.assertRaisesRegex(SkillParseError, "PyYAML"):
+                with self.assertRaisesRegex(SkillDependencyError, "PyYAML"):
                     parse_skill_file(entry, root, "project")
 
 

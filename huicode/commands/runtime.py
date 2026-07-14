@@ -165,6 +165,39 @@ class CLICommandRuntime:
         prefix = "完成" if result.ok else "失败"
         return f"Skill {name} {prefix}: {result.summary}"
 
+    def skill_status(self, arguments: str) -> str:
+        if self.skill_manager is None:
+            return "Skill 系统未启用"
+        target = arguments.strip().lower()
+        if target:
+            definition = self.skill_manager.get(target)
+            if definition is None:
+                return f"未加载 Skill: {arguments}"
+            active = "yes" if target in self.state.skills.active else "no"
+            tools = ", ".join(definition.allowed_tools) or "none"
+            return "\n".join(
+                [
+                    f"skill: {definition.name}",
+                    f"description: {definition.description}",
+                    f"mode: {definition.mode}",
+                    f"source: {definition.source}",
+                    f"active: {active}",
+                    f"allowed_tools: {tools}",
+                    f"entry: {definition.entry_path}",
+                ]
+            )
+        lines = ["skills:"]
+        for definition in self.skill_manager.snapshot.definitions.values():
+            marker = "*" if definition.name in self.state.skills.active else "-"
+            lines.append(
+                f"{marker} {definition.name} [{definition.mode}/{definition.source}] "
+                f"{definition.description}"
+            )
+        if len(lines) == 1:
+            lines.append("- none")
+        lines.append("使用 /skill <name> 查看详情；使用 /<name> [arguments] 执行。")
+        return "\n".join(lines)
+
     def session(self, arguments: str) -> str:
         if self.memory_manager is None:
             return "记忆系统未启用"

@@ -39,6 +39,14 @@ def create_builtin_registry() -> CommandRegistry:
                 "[strict|default|permissive]",
             ),
             _spec("status", "查看 HuiCode 运行状态", "/status", CommandType.LOCAL, _status),
+            _spec(
+                "skill",
+                "查看已加载或已激活的 Skill",
+                "/skill [name]",
+                CommandType.LOCAL,
+                _skill,
+                "[name]",
+            ),
         )
     )
     registry.register_many(
@@ -189,6 +197,13 @@ def _permission(parsed: ParsedCommand, context: CommandContext) -> CommandResult
 def _status(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
     invalid = _reject_arguments(parsed, "/status")
     return invalid or CommandResult(message=context.services.status())
+
+
+def _skill(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
+    arguments = parsed.arguments.strip()
+    if len(arguments.split()) > 1:
+        return CommandResult(ok=False, message="用法: /skill [name]")
+    return CommandResult(message=context.services.skill_status(arguments))
 
 
 def _legacy_sessions(parsed: ParsedCommand, context: CommandContext) -> CommandResult:

@@ -79,6 +79,10 @@ class FakeRuntime:
         self.calls.append(("skill", name, arguments))
         return f"skill:{name}:{arguments}"
 
+    def skill_status(self, arguments):  # noqa: ANN001
+        self.calls.append(("skill_status", arguments))
+        return f"skills:{arguments}"
+
 
 class BuiltinCommandTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -91,12 +95,23 @@ class BuiltinCommandTests(unittest.TestCase):
     def run_command(self, text: str):
         return self.dispatcher.dispatch(self.parser.parse(text), self.context)
 
-    def test_registers_nine_core_visible_commands(self) -> None:
+    def test_registers_ten_core_visible_commands(self) -> None:
         visible = self.registry.visible_commands()
 
         self.assertEqual(
             [spec.name for spec in visible],
-            ["help", "compact", "clear", "plan", "do", "session", "memory", "permission", "status"],
+            [
+                "help",
+                "compact",
+                "clear",
+                "plan",
+                "do",
+                "session",
+                "memory",
+                "permission",
+                "status",
+                "skill",
+            ],
         )
         self.assertEqual({spec.command_type for spec in visible}, {CommandType.LOCAL, CommandType.STATE})
         self.assertTrue(all(spec.description and spec.usage and spec.handler for spec in visible))
@@ -148,6 +163,8 @@ class BuiltinCommandTests(unittest.TestCase):
             "/permission",
             "/permission strict",
             "/status",
+            "/skill",
+            "/skill review",
         ):
             self.run_command(command)
 
@@ -155,6 +172,7 @@ class BuiltinCommandTests(unittest.TestCase):
         self.assertIn(("memory", "update"), self.runtime.calls)
         self.assertIn(("permission", "strict"), self.runtime.calls)
         self.assertIn(("status", ""), self.runtime.calls)
+        self.assertIn(("skill_status", "review"), self.runtime.calls)
         self.assertEqual(self.runtime.sent, [])
 
     def test_hidden_compatibility_commands_delegate(self) -> None:

@@ -1,6 +1,12 @@
 from .catalog import SkillCatalogBuilder, SkillConfigError
 from .manager import SkillManager
-from .parser import SkillParseError, parse_skill_file, render_skill_body
+from .parser import (
+    SkillDependencyError,
+    SkillParseError,
+    ensure_skill_dependencies,
+    parse_skill_file,
+    render_skill_body,
+)
 from .types import (
     ActiveSkill,
     SkillCatalogSnapshot,
@@ -16,11 +22,13 @@ __all__ = [
     "SkillCatalogSnapshot",
     "SkillConfigError",
     "SkillDefinition",
+    "SkillDependencyError",
     "SkillManager",
     "SkillParseError",
     "SkillRunResult",
     "SkillRuntimeState",
     "SkillWarning",
+    "ensure_skill_dependencies",
     "parse_skill_file",
     "render_skill_body",
 ]

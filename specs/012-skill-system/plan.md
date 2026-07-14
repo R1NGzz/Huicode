@@ -235,6 +235,8 @@ active block 与 catalog 均为动态、不可缓存系统补充消息，不写�
 
 移除 `builtin.py` 的硬编码 `REVIEW_PROMPT` 和 `/review` handler。内置 review 由 Catalog 注册，与项目/用户同名覆盖遵循相同路径。
 
+核心 registry 另登记 `/skill [name]` 本地命令。无参数时列出有效 Skill、模式、来源和 active 标记；有参数时显示描述、白名单和入口位置。该命令只读取当前快照，不进入 Agent Loop。
+
 ### 输入入口与热更新
 
 每次顶层输入交给 `InputRouter` 前：

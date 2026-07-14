@@ -59,7 +59,10 @@ class CLISkillTests(unittest.TestCase):
         provider = RecordingProvider()
         output = io.StringIO()
 
-        with patch("builtins.input", side_effect=["/focus Focus On API", "/clear", "/status", "/exit"]), redirect_stdout(output):
+        with patch(
+            "builtins.input",
+            side_effect=["/focus Focus On API", "/clear", "/status", "/skill", "/skill focus", "/exit"],
+        ), redirect_stdout(output):
             code = _run_chat(provider, self.config)
 
         self.assertEqual(code, 0)
@@ -67,6 +70,8 @@ class CLISkillTests(unittest.TestCase):
         self.assertIn("FOCUS Focus On API", provider.calls[0]["prompt"].dynamic_text())
         self.assertEqual({tool.name for tool in provider.calls[0]["tools"]}, {"Read", "Skill"})
         self.assertIn("active=none", output.getvalue())
+        self.assertIn("focus [shared/project]", output.getvalue())
+        self.assertIn("skill: focus", output.getvalue())
 
     def test_new_skill_is_available_on_same_input_after_hot_reload(self) -> None:
         provider = RecordingProvider()

@@ -65,6 +65,7 @@ class CLICommandTests(unittest.TestCase):
             "/permission",
             "/permission strict",
             "/status",
+            "/skill",
             "/clear",
             "/exit",
         ]

@@ -20,6 +20,17 @@ class SkillParseError(ValueError):
     pass
 
 
+class SkillDependencyError(RuntimeError):
+    pass
+
+
+def ensure_skill_dependencies() -> None:
+    if yaml is None:
+        raise SkillDependencyError(
+            "缺少 PyYAML，Skill 系统无法启动；请先运行 python -m pip install -e ."
+        )
+
+
 def parse_skill_file(
     entry_path: Path,
     source_root: Path,
@@ -86,8 +97,7 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 
 
 def _load_yaml(text: str) -> dict[str, Any]:
-    if yaml is None:
-        raise SkillParseError("缺少 PyYAML 依赖，请安装项目运行时依赖")
+    ensure_skill_dependencies()
     try:
         value = yaml.safe_load(text)
     except yaml.YAMLError as exc:

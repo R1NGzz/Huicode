@@ -154,6 +154,9 @@
 
 ## Slash Command 与内置 Skill
 
+- [x] `/skill` 列出有效 Skill、mode、source 和 active 标记，`/skill <name>` 显示详情且 Provider 调用为 0。
+  - 验证：用真实 Python 启动后执行 `/skill` 和 `/skill frontend-design`，并运行 CLI 集成测试。
+
 - [ ] 每个有效 Skill 自动注册为可见 `/<name> [arguments]`。
   - 验证：运行 `python -m unittest tests.test_skills_commands -v`，检查命令类型、描述、usage 和参数提示。
 

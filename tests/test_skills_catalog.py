@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from huicode.skills.catalog import SkillCatalogBuilder, SkillConfigError
 from huicode.tools.registry import create_default_registry
@@ -24,6 +25,14 @@ Run {name}
 
 
 class SkillCatalogTests(unittest.TestCase):
+    def test_missing_yaml_dependency_is_fatal_not_a_skipped_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            roots = {name: base / name for name in ("builtin", "user", "project")}
+            with patch("huicode.skills.parser.yaml", None):
+                with self.assertRaisesRegex(SkillConfigError, "PyYAML"):
+                    SkillCatalogBuilder(roots, create_default_registry(base)).build()
+
     def test_layer_priority_and_alias_normalization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

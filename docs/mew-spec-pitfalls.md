@@ -696,6 +696,32 @@ HuiCode 刚启动时输入 `/` 会显示命令候选；经过几轮对话和一�
 - Windows 用户可编辑的 Markdown/YAML/JSONL 入口必须覆盖 UTF-8 BOM。
 - 文件格式错误要检查原始首字节，不能只根据终端肉眼内容判断。
 
+## 踩坑 27：验收解释器与用户解释器不同，依赖缺失被误判为 Skill 文件错误
+
+现象：
+
+验收报告称 4 个 Skill 已加载，但用户实际启动后 `/help`、Slash 补全都没有安装的 Skill。用户使用 Windows Python 3.11，验收使用 Codex 自带 Python 3.12。
+
+根因：
+
+- PyYAML 只安装在验收解释器，用户的 `python` 没有该依赖。
+- `pyproject.toml` 声明依赖不等于直接从源码运行时已经安装依赖。
+- 解析器把“全局 PyYAML 不存在”包装成每个文件的解析失败，Discovery 又按设计跳过单个坏文件，最终 4 个 Skill 全被跳过但程序继续启动。
+- 验收没有执行用户原命令中的 `python`，也没有核对 `/help` 的真实输出。
+
+后来补救：
+
+- 为用户实际 Python 3.11 安装项目声明的 PyYAML。
+- Catalog 构建前先检查全局依赖；缺失时直接抛启动级 SkillConfigError，不再产生看似正常的空 Catalog。
+- 新增 `/skill [name]` 本地可观测入口。
+- 使用用户实际 `python -m huicode --config .\huicode.yaml` 执行 `/skill`、`/help`、`/exit`：MCP 1/1、Skill 4 个，`frontend-design [shared/user]` 和 `/frontend-design` 均可见。
+
+以后写 spec 要补：
+
+- 验收必须记录并核对 `sys.executable`，用户命令中的解释器与测试解释器不一致时不能声称真实启动通过。
+- 全局依赖缺失必须是全局错误，不能复用“单文件坏了可跳过”的容错路径。
+- 插件/Skill 的发现结果必须通过用户可见命令或状态输出验证，不能只调用内部 Builder。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -727,6 +753,7 @@ HuiCode 刚启动时输入 `/` 会显示命令候选；经过几轮对话和一�
 25. 临时复用 TUI Session 后，补全器、历史、模式和输入开关是否恢复？
 26. 持久化 shell 命令是否覆盖多行内容并在写入后用真实 loader 回读？
 27. Windows 用户生成的文本入口是否兼容 UTF-8 BOM？
+28. 验收是否使用用户实际解释器，并把全局依赖错误与单文件解析错误分开？
 
 ## 维护约定
 

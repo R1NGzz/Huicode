@@ -9,7 +9,7 @@ Skill 系统已按批准的 spec、plan、task 和 checklist 实现。单文件�
 ## 自动验证
 
 - 全量测试：`python -m unittest discover -v`
-  - 结果：285 项通过，2 项跳过，0 失败（含真实使用后的补充回归）。
+  - 结果：286 项通过，2 项跳过，0 失败（含真实使用后的补充回归）。
   - 跳过项：Windows 当前账户无创建符号链接权限，Skill 与权限沙箱各一项真实 symlink 测试跳过；路径解析和越界拒绝的非 symlink 测试通过。
 - 编译检查：`python -m compileall -q huicode tests`
   - 结果：通过。
@@ -41,7 +41,7 @@ Skill 系统已按批准的 spec、plan、task 和 checklist 实现。单文件�
 | AC15 | 通过 | 启动 Catalog 自动发现 commit/review/test，元数据与命令均通过校验。 |
 | AC16 | 通过 | 启动摘要和 `/status` 输出数量、active、reload errors、工具摘要，不输出 SOP/secret。 |
 | AC17 | 通过 | Anthropic/OpenAI Provider 工具历史测试与 isolated 安全切片测试全部通过，thinking/signature 原逻辑保持。 |
-| AC18 | 通过 | 285 项测试、compileall、diff check 和 README 对照通过；tmux 受环境限制，使用 CLI fake-provider 场景替代。 |
+| AC18 | 通过 | 286 项测试、compileall、diff check 和 README 对照通过；tmux 受环境限制，使用 CLI fake-provider 场景替代。 |
 
 ## 端到端场景
 
@@ -75,3 +75,5 @@ Skill 系统已按批准的 spec、plan、task 和 checklist 实现。单文件�
 - `always` 持久化多行 shell 命令时使用带前缀的 Base64 单行编码，避免破坏权限 YAML。
 - Skill 入口使用 `utf-8-sig` 读取，兼容 Windows/.NET 生成的 UTF-8 BOM 文件。
 - 已用真实 `~/.huicode/skills/frontend-design/SKILL.md` 构建 Catalog，成功与三个内置 Skill 一起加载。
+- 新增 `/skill [name]` 本地命令；真实 Python 3.11 下 `/skill` 列出 4 个 Skill，`/help` 显示 `/frontend-design [arguments]`。
+- PyYAML 缺失从“逐文件 warning 并继续空 Catalog”提升为启动级 `SkillConfigError`，错误直接给出安装命令。
