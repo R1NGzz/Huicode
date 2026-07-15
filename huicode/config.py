@@ -4,6 +4,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+try:
+    import yaml
+except ImportError as exc:  # pragma: no cover - 项目依赖缺失时必须明确失败
+    raise RuntimeError("HuiCode 需要 PyYAML，请先安装项目依赖") from exc
+
 
 @dataclass(frozen=True)
 class ThinkingConfig:
@@ -52,6 +57,7 @@ class LLMConfig:
     headers: dict[str, str] = field(default_factory=dict)
     show_usage: bool = False
     mcp: dict[str, Any] = field(default_factory=dict)
+    hooks: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ConfigError(ValueError):
@@ -59,7 +65,7 @@ class ConfigError(ValueError):
 
 
 def load_config(path: str | Path) -> LLMConfig:
-    values = _parse_minimal_yaml(Path(path).read_text(encoding="utf-8"))
+    values = _parse_minimal_yaml(Path(path).read_text(encoding="utf-8-sig"))
     missing = [key for key in ("protocol", "model", "base_url", "api_key") if not values.get(key)]
     if missing:
         raise ConfigError(f"缺少必填配置字段: {', '.join(missing)}")
@@ -97,6 +103,12 @@ def load_config(path: str | Path) -> LLMConfig:
         mcp_raw = {}
     if not isinstance(mcp_raw, dict):
         raise ConfigError("配置字段 mcp 必须是 YAML 映射")
+
+    hooks_raw = values.get("hooks", [])
+    if hooks_raw is None:
+        hooks_raw = []
+    if not isinstance(hooks_raw, list) or not all(isinstance(item, dict) for item in hooks_raw):
+        raise ConfigError("配置字段 hooks 必须是 YAML 映射列表")
 
     context = ContextConfig(
         enabled=_as_bool(context_raw.get("enabled", True), "context.enabled"),
@@ -160,6 +172,7 @@ def load_config(path: str | Path) -> LLMConfig:
         api_key=str(values["api_key"]).strip(),
         headers=_as_string_map(headers_raw, "headers"),
         mcp=mcp_raw,
+        hooks=hooks_raw,
         max_tokens=_as_int(values.get("max_tokens", 2048), "max_tokens"),
         temperature=_as_optional_float(values.get("temperature"), "temperature"),
         show_usage=_as_bool(values.get("show_usage", False), "show_usage"),
@@ -174,17 +187,14 @@ def load_config(path: str | Path) -> LLMConfig:
 
 
 def _parse_minimal_yaml(text: str) -> dict[str, Any]:
-    lines = [
-        (line_no, line)
-        for line_no, original in enumerate(text.splitlines(), start=1)
-        if (line := _strip_comment(original).rstrip()).strip()
-    ]
-    if not lines:
+    try:
+        root = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        location = f"第 {mark.line + 1} 行第 {mark.column + 1} 列" if mark is not None else "未知位置"
+        raise ConfigError(f"YAML 语法错误（{location}）: {exc}") from exc
+    if root is None:
         return {}
-    root, index = _parse_block(lines, 0, _indent(lines[0][1]))
-    if index != len(lines):
-        line_no, _ = lines[index]
-        raise ConfigError(f"第 {line_no} 行无法解析")
     if not isinstance(root, dict):
         raise ConfigError("配置根节点必须是映射")
     return root

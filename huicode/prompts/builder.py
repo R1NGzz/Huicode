@@ -14,7 +14,7 @@ def build_prompt_bundle(
         active_skills=(),
         long_term_memory=context.long_term_memory,
     )
-    dynamic_modules = _active_skill_modules(context) + (_environment_module(context),)
+    dynamic_modules = _active_skill_modules(context) + _hook_instruction_modules(context) + (_environment_module(context),)
     supplemental_modules = (
         (_mode_instruction_module(context, policy),)
         + _memory_modules(context)
@@ -37,6 +37,19 @@ def _active_skill_modules(context: PromptContext) -> tuple[PromptModule, ...]:
             cacheable=False,
         )
         for index, block in enumerate(context.active_skill_blocks, start=1)
+        if block.strip()
+    )
+
+
+def _hook_instruction_modules(context: PromptContext) -> tuple[PromptModule, ...]:
+    return tuple(
+        PromptModule(
+            name=f"hook_instruction_{index}",
+            content=block,
+            stable=False,
+            cacheable=False,
+        )
+        for index, block in enumerate(context.hook_instruction_blocks, start=1)
         if block.strip()
     )
 

@@ -5,6 +5,8 @@ from collections.abc import Callable
 from huicode.agent import run_agent_loop
 from huicode.agent_events import AgentOptions, AgentState
 from huicode.config import LLMConfig
+from huicode.context import ContextManager
+from huicode.hooks import HookManager
 from huicode.provider_factory import create_provider_with_model
 from huicode.providers.base import ConversationMessage, Provider
 from huicode.tools.base import ToolContext
@@ -30,6 +32,8 @@ class SkillRunner:
         manager: SkillManager,
         options: AgentOptions,
         provider_factory: ProviderFactory | None = None,
+        hook_manager: HookManager | None = None,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -38,6 +42,8 @@ class SkillRunner:
         self.manager = manager
         self.options = options
         self.provider_factory = provider_factory
+        self.hook_manager = hook_manager
+        self.context_manager = context_manager
 
     def run(
         self,
@@ -84,6 +90,8 @@ class SkillRunner:
             manager=self.manager,
             options=self.options,
             provider_factory=self.provider_factory,
+            hook_manager=self.hook_manager,
+            context_manager=self.context_manager,
         )
         child_registry.register(
             SkillTool(
@@ -110,6 +118,9 @@ class SkillRunner:
             options=self.options,
             skill_manager=self.manager,
             provider_override_factory=self.provider_factory,
+            hook_manager=self.hook_manager,
+            context_manager=self.context_manager,
+            agent_scope=f"skill:{definition.name}",
         )
         stop_reason = "error"
         error_message = ""

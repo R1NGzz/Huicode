@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from huicode.context.state import ContextState
+from huicode.hooks.types import HookRuntimeState
 from huicode.memory.types import MemoryRuntimeState
 from huicode.providers.base import ConversationMessage, ToolCall
 from huicode.skills.types import SkillRuntimeState
@@ -63,6 +64,7 @@ class AgentState:
     context: ContextState = field(default_factory=ContextState)
     memory: MemoryRuntimeState = field(default_factory=MemoryRuntimeState)
     skills: SkillRuntimeState = field(default_factory=SkillRuntimeState)
+    hooks: HookRuntimeState = field(default_factory=HookRuntimeState)
     cancel_requested: bool = False
     unknown_tool_count: int = 0
     iterations: int = 0

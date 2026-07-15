@@ -722,6 +722,52 @@ HuiCode 刚启动时输入 `/` 会显示命令候选；经过几轮对话和一�
 - 全局依赖缺失必须是全局错误，不能复用“单文件坏了可跳过”的容错路径。
 - 插件/Skill 的发现结果必须通过用户可见命令或状态输出验证，不能只调用内部 Builder。
 
+## 踩坑 28：上下文 Hook 已执行，但当前 Provider 请求看不到新指令
+
+现象：
+
+`context_after_compact` 的 prompt Hook 日志显示 success，状态里也已经有动态指令，但紧接着发出的主模型请求没有这段内容，要到下一次请求才出现。
+
+根因：
+
+- Agent 在调用 ContextManager 前就构建了 PromptBundle 快照。
+- 重量压缩结束后 Hook 才把指令写入 HookRuntimeState，但当前请求仍复用旧 PromptBundle。
+- 原测试只检查状态最终存在，没有检查压缩完成后的第一条真实 Provider 请求。
+
+后来补救：
+
+- ContextManager 返回后、Provider 请求前重新构建动态 PromptBundle。
+- 新增“压缩后立即注入”的 Provider spy 测试，直接断言当前请求包含 Hook 指令。
+- 保持稳定提示模块不变，只重建动态模块，不把 Hook 文本写进用户历史。
+
+以后写 spec 要补：
+
+- 任何运行时上下文注入都要验证“第几次请求生效”，不能只检查最终状态。
+- 在请求准备阶段修改 Prompt 状态时，要明确快照创建点和重建边界。
+
+## 踩坑 29：`shutdown(wait=False)` 不等于 Python 进程会按时退出
+
+现象：
+
+HookManager 的 `close()` 在 2 秒后返回，但存在慢后台 Hook 时，Python 解释器仍等待普通线程结束，终端实际退出时间超过约定上限。
+
+根因：
+
+- `ThreadPoolExecutor.shutdown(wait=False)` 只是不在该调用点等待。
+- ThreadPoolExecutor 的普通 worker 会在解释器退出阶段被统一 join。
+- 原测试只测量 `manager.close()` 耗时，没有测量进程生命周期语义。
+
+后来补救：
+
+- Hook 后台执行改为固定数量的 daemon worker，并继续使用 Future 关联 pending 状态。
+- 关闭时最多等待 2 秒；未完成项记录 skipped，回调不再重复写最终状态。
+- 文档同步改为“受控 daemon worker 池”，避免计划与实现不一致。
+
+以后写 spec 要补：
+
+- 后台任务的有界退出必须同时考虑管理器返回时间和解释器退出行为。
+- 对不允许拖住 CLI 的后台能力，要明确线程 daemon 属性、未完成任务日志和迟到回调处理。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
@@ -754,6 +800,8 @@ HuiCode 刚启动时输入 `/` 会显示命令候选；经过几轮对话和一�
 26. 持久化 shell 命令是否覆盖多行内容并在写入后用真实 loader 回读？
 27. Windows 用户生成的文本入口是否兼容 UTF-8 BOM？
 28. 验收是否使用用户实际解释器，并把全局依赖错误与单文件解析错误分开？
+29. 运行时注入的动态上下文是否在约定的第一条 Provider 请求中生效？
+30. 后台任务的退出上限是否覆盖解释器退出阶段，而不只是管理器方法返回时间？
 
 ## 维护约定
 

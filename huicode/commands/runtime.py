@@ -7,7 +7,9 @@ from typing import TextIO
 
 from huicode.agent_events import AgentMode, AgentState
 from huicode.config import LLMConfig
-from huicode.context import ContextManager
+from huicode.context import ContextLifecycleCallbacks, ContextManager
+from huicode.hooks import HookManager
+from huicode.hooks.events import context_data, make_event
 from huicode.memory.manager import MemoryManager
 from huicode.mcp import MCPManager
 from huicode.permissions import PermissionContext
@@ -40,6 +42,7 @@ class CLICommandRuntime:
         mcp_manager: MCPManager | None = None,
         skill_manager: SkillManager | None = None,
         isolated_skill_runner: Callable[[str, str], SkillRunResult] | None = None,
+        hook_manager: HookManager | None = None,
         output: TextIO | None = None,
     ) -> None:
         self.provider = provider
@@ -53,6 +56,7 @@ class CLICommandRuntime:
         self.mcp_manager = mcp_manager
         self.skill_manager = skill_manager
         self.isolated_skill_runner = isolated_skill_runner
+        self.hook_manager = hook_manager
         self.output = output or sys.stdout
         self._send_user_message = send_user_message
         self._mode: CommandMode = "default"
@@ -105,6 +109,7 @@ class CLICommandRuntime:
             config=self.config,
             prompt=None,
             tools=[],
+            callbacks=self._context_callbacks(),
         )
         self.refresh_status()
         if report.kind == "summary":
@@ -126,6 +131,8 @@ class CLICommandRuntime:
         self.context_manager.reset(self.state)
         if self.skill_manager is not None:
             self.skill_manager.clear_state(self.state.skills)
+        if self.hook_manager is not None:
+            self.hook_manager.clear_transient(self.state.hooks)
         if self.memory_manager is not None:
             self.memory_manager.clear_current_session(self.state)
         self._mode = "default"
@@ -253,6 +260,7 @@ class CLICommandRuntime:
             f"mcp: {self._format_mcp_summary()}",
             f"memory: {self._format_memory_summary(compact=True)}",
             f"skills: {self._format_skill_summary()}",
+            f"hooks: {self._format_hook_summary()}",
         ]
         return "\n".join(lines)
 
@@ -267,6 +275,51 @@ class CLICommandRuntime:
             f"discovered={len(snapshot.definitions)} active={active} "
             f"reload_errors={self.skill_manager.reload_errors} tools={tools}"
         )
+
+    def _format_hook_summary(self) -> str:
+        if self.hook_manager is None:
+            return "effective=0 pending=0 failed=0"
+        status = self.hook_manager.summary()
+        return (
+            f"effective={status.effective} disabled={status.disabled} pending={status.pending} "
+            f"failed={status.failed} denied={status.denied} log={status.log_path}"
+        )
+
+    def _context_callbacks(self) -> ContextLifecycleCallbacks | None:
+        if self.hook_manager is None:
+            return None
+        manager = self.hook_manager
+        mode: AgentMode = "plan" if self._mode == "plan" else "chat"
+
+        def before(values: dict[str, object]) -> None:
+            manager.dispatch(
+                make_event(
+                    "context_before_compact",
+                    session_id=manager.session_id,
+                    workspace=self.tool_context.workspace,
+                    mode=mode,
+                    turn_id=self.state.hooks.turn_id or None,
+                    iteration=self.state.iterations,
+                    data=context_data(**values),
+                ),
+                self.state.hooks,
+            )
+
+        def after(report) -> None:  # noqa: ANN001
+            manager.dispatch(
+                make_event(
+                    "context_after_compact",
+                    session_id=manager.session_id,
+                    workspace=self.tool_context.workspace,
+                    mode=mode,
+                    turn_id=self.state.hooks.turn_id or None,
+                    iteration=self.state.iterations,
+                    data=context_data(report),
+                ),
+                self.state.hooks,
+            )
+
+        return ContextLifecycleCallbacks(before_compact=before, after_compact=after)
 
     def context_status(self) -> str:
         state = self.state.context

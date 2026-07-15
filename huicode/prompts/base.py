@@ -53,6 +53,7 @@ class PromptContext:
     custom_instructions: str = ""
     active_skills: tuple[str, ...] = ()
     active_skill_blocks: tuple[str, ...] = ()
+    hook_instruction_blocks: tuple[str, ...] = ()
     skill_catalog: tuple[tuple[str, str, str], ...] = ()
     long_term_memory: str = ""
     memory_enabled: bool = False

@@ -1,6 +1,6 @@
 # HuiCode
 
-HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
+HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、生命周期 Hook、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
 
 ## 能力概览
 
@@ -23,6 +23,7 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 两层上下文压缩
 - 统一 Slash Command 注册、分发和 Tab 补全
 - 两阶段加载的 Skill 系统与 isolated 子会话
+- 声明式生命周期 Hook、工具拦截与自动化动作
 
 ## 工具系统
 
@@ -286,6 +287,83 @@ model: optional-model-name
 
 每次顶层输入前 HuiCode 会检查项目级和用户级 Skill 是否变化。合法更新会原子刷新目录、命令和 active SOP；未知工具或命令冲突会保留上一份有效快照，并在 `/status` 显示 reload error。`/clear` 会清除 active Skill、工具限制和当前轮模型覆盖，但不会删除 Skill 文件或目录。
 
+## Hook 系统
+
+Hook 用 YAML 声明“事件 + 可选条件 + 动作”，适合自动格式化、固定安全拦截、外部通知和系统级上下文注入。规则按以下优先级合并，相同 `id` 由高层整体覆盖：
+
+```text
+用户级：~/.huicode/hooks.yaml
+启动配置：--config 指定的 huicode.yaml 中的 hooks
+项目级：<workspace>/.huicode/hooks.yaml
+```
+
+独立文件和主配置都使用顶层 `hooks` 列表。下面的示例可以直接放进任一位置：
+
+```yaml
+hooks:
+  - id: format-python-after-edit
+    event: tool_after
+    if:
+      all:
+        - field: tool.name
+          exact: Edit
+        - field: tool.arguments.path
+          glob: "**/*.py"
+    action:
+      type: command
+      command: python
+      args:
+        - -m
+        - black
+        - .
+    async: true
+    timeout_seconds: 30
+
+  - id: protect-generated-files
+    event: tool_before
+    if:
+      any:
+        - field: tool.arguments.path
+          glob: "**/generated/**"
+    action:
+      type: command
+      command: python
+      args:
+        - -c
+        - "import sys; print('generated files are read-only', file=sys.stderr); raise SystemExit(2)"
+
+  - id: inject-project-policy
+    event: session_start
+    action:
+      type: prompt
+      scope: session
+      content: "提交前必须运行与改动相关的测试。"
+
+  - id: notify-turn-finished
+    event: turn_end
+    action:
+      type: http
+      url: http://127.0.0.1:9000/hooks/turn-end
+      method: POST
+      headers:
+        X-HuiCode-Source: local
+    async: true
+    timeout_seconds: 5
+```
+
+事件覆盖 `session_start/session_end`、`turn_start/turn_end`、`message_received/message_completed`、`tool_before/tool_after`、`context_before_compact/context_after_compact` 和 `agent_error`。条件支持大小写敏感的 `exact`、`glob`、`regex`、`not`，多个叶子只能选择 `all` 或 `any`。工具别名会规范化，例如 `Glob` 在 `tool.name` 中按 `Find` 匹配，原名保存在 `tool.original_name`。
+
+动作行为：
+
+- `command`：从 UTF-8 stdin 接收事件 JSON；`tool_before` 下退出码 `2` 表示明确拒绝，stderr 是拒绝原因。
+- `prompt`：以 `<huicode_instruction type="hook">` 动态系统指令注入，支持 `next_request`、`turn`、`session`，不会进入用户历史。
+- `http`：请求体是同一事件 JSON；`tool_before` 的 2xx JSON `{"decision":"deny","reason":"..."}` 表示明确拒绝。
+- `subagent`：当前只记录 `skipped` 占位，不启动模型。
+
+`once: true` 让规则在当前进程第一次匹配后不再运行；`async: true` 只适用于不需要即时结果的动作；`timeout_seconds` 范围为 1 到 300。`tool_before` 和 prompt 动作不能异步。工具被 Hook 拒绝后不会弹权限确认，拒绝会作为 `hook_denied` 工具结果回灌模型，Agent Loop 可以继续调整。
+
+Hook 命令仍受危险命令黑名单和项目 cwd 沙箱保护。运行失败默认不刷屏、不终止 Agent，详情追加到 `<workspace>/.huicode/logs/hooks.jsonl`；`/status` 显示 effective、disabled、pending、failed、denied 和日志路径。退出时后台动作最多收拢 2 秒。配置错误会在启动阶段指出规则 id、来源和字段并返回状态码 2；本章不支持 Hook 热更新、显式优先级、once 跨进程持久化或真实 SubAgent 动作。
+
 ## Agent Loop
 
 普通输入会进入多轮 ReAct 流程：
@@ -486,7 +564,7 @@ context:
 - `/session [resume <session-id>|clean]`：列出、恢复或清理会话
 - `/memory [update|rebuild]`：查看、更新长期记忆或重建索引
 - `/permission [strict|default|permissive]`：查看或切换权限模式
-- `/status`：聚合查看模式、Provider、Token、上下文、权限、MCP、记忆和 Skill
+- `/status`：聚合查看模式、Provider、Token、上下文、权限、MCP、记忆、Skill 和 Hook
 - `/skill [name]`：列出已加载/已激活 Skill，或查看指定 Skill 的来源、模式和工具白名单
 - `/commit [arguments]`：运行当前有效的 commit Skill
 - `/review [arguments]`：运行当前有效的 review Skill，默认使用 isolated 子会话
@@ -505,3 +583,5 @@ context:
 - 通用子 Agent 或 `TaskCreate`
 - `ToolSearch`
 - Skill 市场、远程分发和版本管理
+- Hook 热更新、显式优先级和 once 标记持久化
+- Hook SubAgent 动作的真实执行

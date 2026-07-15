@@ -4,6 +4,8 @@ from pathlib import Path
 
 from huicode.agent_events import AgentOptions
 from huicode.config import LLMConfig
+from huicode.hooks.manager import HookManager
+from huicode.hooks.types import CommandAction, HookActionResult, HookCatalog, HookRule
 from huicode.providers.base import ConversationMessage, StreamEvent, ToolCall
 from huicode.skills.catalog import SkillCatalogBuilder
 from huicode.skills.manager import SkillManager
@@ -49,6 +51,49 @@ ISOLATED SOP: {{{{args}}}}
 
 
 class SkillRunnerTests(unittest.TestCase):
+    def test_isolated_skill_uses_shared_tool_hooks(self) -> None:
+        class DenyExecutor:
+            def __init__(self) -> None:
+                self.scopes = []
+
+            def execute(self, rule, payload, inject_prompt=None):  # noqa: ANN001
+                self.scopes.append(payload["agent_scope"])
+                return HookActionResult("denied", deny_reason="skill read blocked")
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            manager = isolated_manager(base)
+            registry = create_default_registry(base)
+            provider = RecordingProvider(
+                [
+                    [StreamEvent(kind="tool_call", tool_call=ToolCall("read-1", "Read", {"path": "README.md"}))],
+                    [StreamEvent(kind="text", text="handled")],
+                ]
+            )
+            executor = DenyExecutor()
+            hook_manager = HookManager(
+                HookCatalog((HookRule("deny", "tool_before", CommandAction(command="noop")),)),
+                base,
+                action_executor=executor,
+            )
+            runner = SkillRunner(
+                provider=provider,
+                registry=registry,
+                context=ToolContext(base),
+                config=LLMConfig("openai", "main", "https://example.test", "secret"),
+                manager=manager,
+                options=AgentOptions(),
+                hook_manager=hook_manager,
+            )
+
+            result = runner.run("review", "x")
+            hook_manager.close()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.summary, "handled")
+        self.assertEqual(executor.scopes, ["skill:review"])
+        self.assertEqual(provider.calls[1]["messages"][-1].tool_result.error.code, "hook_denied")
+
     def test_history_selection_keeps_complete_tool_group(self) -> None:
         call = ToolCall("call-1", "Read", {"path": "a"})
         messages = [

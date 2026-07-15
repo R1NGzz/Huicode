@@ -9,7 +9,7 @@ from huicode.context.lightweight import compact_single_tool_result, compact_tool
 from huicode.context.state import ContextState
 from huicode.context.store import ToolResultStore
 from huicode.context.summarizer import HistorySummarizer
-from huicode.context.types import ContextCompressionReport, ContextPreparation
+from huicode.context.types import ContextCompressionReport, ContextLifecycleCallbacks, ContextPreparation
 from huicode.prompts import PromptBundle
 from huicode.providers.base import ConversationMessage, Provider, ToolCall, ToolSpec
 from huicode.tools.base import ToolContext, ToolResult
@@ -65,6 +65,7 @@ class ContextManager:
         config: LLMConfig,
         prompt: PromptBundle | None,
         tools: list[ToolSpec] | None,
+        callbacks: ContextLifecycleCallbacks | None = None,
     ) -> ContextPreparation:
         _ = context
         if not self.settings.enabled:
@@ -111,7 +112,15 @@ class ContextManager:
                 reports=tuple(reports),
             )
 
-        summary_report = self._run_summary(provider, state, config, prompt, tools, manual=False)
+        summary_report = self._run_summary(
+            provider,
+            state,
+            config,
+            prompt,
+            tools,
+            manual=False,
+            callbacks=callbacks,
+        )
         reports.append(summary_report)
         if summary_report.kind == "summary":
             history_changed = True
@@ -131,6 +140,7 @@ class ContextManager:
         config: LLMConfig,
         prompt: PromptBundle | None,
         tools: list[ToolSpec] | None,
+        callbacks: ContextLifecycleCallbacks | None = None,
     ) -> ContextCompressionReport:
         _ = context, prompt, tools
         if not self.settings.enabled:
@@ -146,7 +156,15 @@ class ContextManager:
             _replace_messages_in_place(state.messages, updated_messages)
         if report is not None:
             return report
-        return self._run_summary(provider, state, config, None, None, manual=True)
+        return self._run_summary(
+            provider,
+            state,
+            config,
+            None,
+            None,
+            manual=True,
+            callbacks=callbacks,
+        )
 
     def record_usage(self, state, usage: dict[str, object], request_estimate: TokenEstimate) -> None:
         self.estimator.record_usage(state.context, usage, request_estimate)
@@ -162,9 +180,28 @@ class ContextManager:
         prompt: PromptBundle | None,
         tools: list[ToolSpec] | None,
         manual: bool,
+        callbacks: ContextLifecycleCallbacks | None = None,
+    ) -> ContextCompressionReport:
+        before = self.estimator.estimate_messages(state.messages).tokens
+        _call_context_callback(
+            callbacks.before_compact if callbacks is not None else None,
+            {"manual": manual, "tokens_before": before},
+        )
+        report = self._run_summary_impl(provider, state, config, prompt, tools, manual, before)
+        _call_context_callback(callbacks.after_compact if callbacks is not None else None, report)
+        return report
+
+    def _run_summary_impl(
+        self,
+        provider: Provider,
+        state,
+        config: LLMConfig,
+        prompt: PromptBundle | None,
+        tools: list[ToolSpec] | None,
+        manual: bool,
+        before: int,
     ) -> ContextCompressionReport:
         _ = prompt, tools
-        before = self.estimator.estimate_messages(state.messages).tokens
         older, recent = split_recent_messages(state.messages, self.settings, self.estimator)
         if not older or not recent:
             return ContextCompressionReport(kind="skip", tokens_before=before, tokens_after=before, message="没有可压缩的早期历史")
@@ -207,3 +244,12 @@ class ContextManager:
 
 def _replace_messages_in_place(target: list[ConversationMessage], replacement: list[ConversationMessage]) -> None:
     target[:] = replacement
+
+
+def _call_context_callback(callback, value) -> None:  # noqa: ANN001
+    if callback is None:
+        return
+    try:
+        callback(value)
+    except Exception:
+        pass

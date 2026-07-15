@@ -21,6 +21,20 @@ def make_context(iteration: int = 1, mode: str = "chat") -> PromptContext:
 
 
 class PromptBuilderTests(unittest.TestCase):
+    def test_hook_instructions_are_dynamic_after_active_skills(self) -> None:
+        context = replace(
+            make_context(),
+            active_skill_blocks=("<skill>review</skill>",),
+            hook_instruction_blocks=("<huicode_instruction type=\"hook\">check</huicode_instruction>",),
+        )
+        bundle = build_prompt_bundle(context)
+        names = bundle.module_names()
+        self.assertLess(names.index("active_skill_1"), names.index("hook_instruction_1"))
+        self.assertLess(names.index("hook_instruction_1"), names.index("environment"))
+        hook = next(module for module in bundle.dynamic_modules if module.name == "hook_instruction_1")
+        self.assertFalse(hook.stable)
+        self.assertFalse(hook.cacheable)
+
     def test_skill_catalog_is_lightweight_and_active_sop_is_dynamic_first(self) -> None:
         context = replace(
             make_context(),

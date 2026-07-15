@@ -18,6 +18,8 @@ from huicode.commands import (
 )
 from huicode.config import ConfigError, LLMConfig, load_config
 from huicode.context import ContextManager
+from huicode.hooks import HookConfigError, HookManager, hook_config_paths, load_hook_catalog
+from huicode.hooks.events import make_event
 from huicode.memory.manager import MemoryManager
 from huicode.mcp import MCPConfigError, MCPManager, load_mcp_config, mcp_config_paths
 from huicode.mcp.transport import create_transport
@@ -131,6 +133,16 @@ def _run_chat(
         print(f"Skill 配置错误: {exc}")
         return 2
 
+    try:
+        hook_catalog = load_hook_catalog(hook_config_paths(workspace), inline_hooks=config.hooks)
+        hook_manager = HookManager(hook_catalog, workspace)
+    except HookConfigError as exc:
+        _close_mcp(mcp_manager)
+        if memory_manager is not None:
+            memory_manager.close()
+        print(f"Hook 配置错误: {exc}")
+        return 2
+
     runtime_holder = {}
 
     def run_isolated_skill(name: str, arguments: str):
@@ -143,6 +155,8 @@ def _run_chat(
             config=config,
             manager=skill_manager,
             options=AgentOptions(mode=mode),
+            hook_manager=hook_manager,
+            context_manager=context_manager,
         )
         return runner.run(
             name,
@@ -163,6 +177,7 @@ def _run_chat(
         mcp_manager=mcp_manager,
         skill_manager=skill_manager,
         isolated_skill_runner=run_isolated_skill,
+        hook_manager=hook_manager,
         send_user_message=lambda text, mode, show_usage: _run_request(
             provider,
             tool_registry,
@@ -174,6 +189,8 @@ def _run_chat(
             show_usage,
             memory_manager,
             skill_manager,
+            context_manager,
+            hook_manager,
         ),
     )
     runtime_holder["runtime"] = runtime
@@ -187,6 +204,21 @@ def _run_chat(
         runtime.set_refresh_callback(lambda: prompt_session.app.invalidate())
     command_context = CommandContext(runtime, runtime, command_registry)
     router = InputRouter(command_registry)
+    hook_manager.start_session(
+        make_event(
+            "session_start",
+            session_id=hook_manager.session_id,
+            workspace=workspace,
+            mode="chat",
+            data={
+                "session": {
+                    "hook_sources": dict(hook_catalog.source_counts),
+                    "effective_hooks": hook_catalog.effective_count,
+                }
+            },
+        ),
+        state.hooks,
+    )
     if mcp_manager is not None and mcp_manager.server_count:
         print(
             f"MCP servers={mcp_manager.active_server_count}/{mcp_manager.server_count} "
@@ -203,6 +235,14 @@ def _run_chat(
     )
     for warning in skill_snapshot.warnings:
         print(f"Skill warning: {warning.display()}")
+    hook_status = hook_manager.summary()
+    hook_sources = ",".join(
+        f"{source}={count}" for source, count in sorted(hook_status.source_counts.items())
+    ) or "none"
+    print(
+        f"Hooks effective={hook_status.effective} disabled={hook_status.disabled} "
+        f"sources={hook_sources}"
+    )
     print(f"HuiCode 已连接: {provider.name}:{provider.model}")
     print("输入 /help 查看命令；/plan 进入计划模式，/do 返回默认模式。")
 
@@ -212,7 +252,15 @@ def _run_chat(
             user_text = _read_user_input(prompt_session, runtime)
         except EOFError:
             print()
-            return _close_resources_and_return(mcp_manager, memory_manager, 0)
+            return _close_resources_and_return(
+                mcp_manager,
+                memory_manager,
+                0,
+                hook_manager=hook_manager,
+                state=state,
+                mode="plan" if runtime.get_mode() == "plan" else "chat",
+                reason="eof",
+            )
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
             continue
@@ -241,7 +289,15 @@ def _run_chat(
 
         router.route(user_text, command_context)
         if runtime.exit_requested:
-            return _close_resources_and_return(mcp_manager, memory_manager, 0)
+            return _close_resources_and_return(
+                mcp_manager,
+                memory_manager,
+                0,
+                hook_manager=hook_manager,
+                state=state,
+                mode="plan" if runtime.get_mode() == "plan" else "chat",
+                reason="exit",
+            )
 
 
 def _create_prompt_session(command_registry, runtime):  # noqa: ANN001
@@ -314,10 +370,27 @@ def _close_resources_and_return(
     manager: MCPManager | None,
     memory_manager: MemoryManager | None,
     code: int,
+    *,
+    hook_manager: HookManager | None = None,
+    state: AgentState | None = None,
+    mode: AgentMode = "chat",
+    reason: str = "exit",
 ) -> int:
-    _close_mcp(manager)
+    if hook_manager is not None:
+        hook_manager.close(
+            make_event(
+                "session_end",
+                session_id=hook_manager.session_id,
+                workspace=hook_manager.workspace,
+                mode=mode,
+                iteration=state.iterations if state is not None else 0,
+                data={"session": {"reason": reason}},
+            ),
+            state.hooks if state is not None else None,
+        )
     if memory_manager is not None:
         memory_manager.close()
+    _close_mcp(manager)
     return code
 
 
@@ -332,6 +405,8 @@ def _run_request(
     show_usage: bool,
     memory_manager: MemoryManager | None = None,
     skill_manager: SkillManager | None = None,
+    context_manager: ContextManager | None = None,
+    hook_manager: HookManager | None = None,
 ) -> None:
     options = AgentOptions(mode=mode)
     last_user_count = len(state.messages)
@@ -345,6 +420,8 @@ def _run_request(
         options=options,
         memory=memory_manager,
         skill_manager=skill_manager,
+        context_manager=context_manager,
+        hook_manager=hook_manager,
     ):
         if event.kind == "thinking" and not config.thinking.show:
             continue

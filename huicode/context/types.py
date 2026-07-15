@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -40,6 +41,12 @@ class ContextPreparation:
 
 
 @dataclass(frozen=True)
+class ContextLifecycleCallbacks:
+    before_compact: Callable[[dict[str, object]], None] | None = None
+    after_compact: Callable[[ContextCompressionReport], None] | None = None
+
+
+@dataclass(frozen=True)
 class SummaryResult:
     ok: bool
     summary_text: str = ""
@@ -66,4 +73,3 @@ class CompactToolResult:
 class SummaryBuildResult:
     summary_message: str
     boundary_message: str
-

@@ -21,6 +21,21 @@ class FakeConfirmer:
 
 
 class PermissionEngineTests(unittest.TestCase):
+    def test_internal_hook_logs_are_protected_from_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            context = ToolContext(
+                workspace=workspace,
+                permissions=PermissionContext(workspace=workspace, mode="permissive"),
+            )
+            decision = evaluate_permission(
+                ToolCall("call", "Write", {"path": ".huicode/logs/hooks.jsonl", "content": "tamper"}),
+                WriteFileTool(),
+                context,
+            )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.source, "internal_state")
+
     def test_disabled_permission_context_allows(self) -> None:
         decision = evaluate_permission(
             ToolCall("1", "Bash", {"command": "git status"}),

@@ -5,14 +5,17 @@ import os
 import platform
 import re
 import sys
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, TextIO
 
-from huicode.context import ContextManager, TokenEstimate
+from huicode.context import ContextLifecycleCallbacks, ContextManager, TokenEstimate
 from huicode.agent_events import AgentEvent, AgentOptions, AgentState, CollectedResponse, ToolBatch
 from huicode.config import LLMConfig
+from huicode.hooks import HookManager
+from huicode.hooks.events import context_data, error_data, make_event, message_data, tool_data
 from huicode.prompts import PromptBundle, PromptContext, build_prompt_bundle, enhance_tool_specs, normalize_cache_usage
 from huicode.providers.base import ConversationMessage, Provider, ToolCall
 from huicode.sse import APIError
@@ -65,9 +68,13 @@ def run_agent_loop(
     memory=None,
     skill_manager: SkillManager | None = None,
     provider_override_factory=None,
+    hook_manager: HookManager | None = None,
+    context_manager: ContextManager | None = None,
+    agent_scope: str = "main",
 ) -> Iterator[AgentEvent]:
+    done_reason = ""
     try:
-        yield from _run_agent_loop_impl(
+        for event in _run_agent_loop_impl(
             provider=provider,
             registry=registry,
             context=context,
@@ -78,9 +85,36 @@ def run_agent_loop(
             memory=memory,
             skill_manager=skill_manager,
             provider_override_factory=provider_override_factory,
-        )
+            hook_manager=hook_manager,
+            context_manager=context_manager,
+            agent_scope=agent_scope,
+        ):
+            if event.kind == "done":
+                done_reason = event.stop_reason
+                _dispatch_turn_end(
+                    hook_manager,
+                    context,
+                    state,
+                    options,
+                    event.stop_reason,
+                    event.iteration or state.iterations,
+                    agent_scope,
+                )
+            yield event
     finally:
         state.skills.turn_model_override = None
+        if hook_manager is not None and state.hooks.turn_id:
+            if not done_reason:
+                _dispatch_turn_end(
+                    hook_manager,
+                    context,
+                    state,
+                    options,
+                    "cancelled",
+                    state.iterations,
+                    agent_scope,
+                )
+            hook_manager.end_turn(state.hooks)
 
 
 def _run_agent_loop_impl(
@@ -94,18 +128,48 @@ def _run_agent_loop_impl(
     memory=None,
     skill_manager: SkillManager | None = None,
     provider_override_factory=None,
+    hook_manager: HookManager | None = None,
+    context_manager: ContextManager | None = None,
+    agent_scope: str = "main",
 ) -> Iterator[AgentEvent]:
     state.cancel_requested = False
     state.iterations = 0
     state.unknown_tool_count = 0
     empty_response_count = 0
     override_providers: dict[str, Provider] = {}
-    context_manager = ContextManager(context.workspace, config.context)
+    context_manager = context_manager or ContextManager(context.workspace, config.context)
     turn_start = len(state.messages)
+    state.hooks.turn_id = uuid.uuid4().hex[:12]
+    _dispatch_hook(
+        hook_manager,
+        make_event(
+            "turn_start",
+            session_id=_hook_session_id(hook_manager),
+            workspace=context.workspace,
+            mode=options.mode,
+            turn_id=state.hooks.turn_id,
+            agent_scope=agent_scope,
+            data={"turn": {"input": user_text, "message_count_before": turn_start}},
+        ),
+        state,
+    )
     user_message = ConversationMessage(role="user", content=_build_user_text(user_text, state, options))
     state.messages.append(user_message)
     if memory is not None:
         memory.record_message(state, user_message)
+    _dispatch_hook(
+        hook_manager,
+        make_event(
+            "message_received",
+            session_id=_hook_session_id(hook_manager),
+            workspace=context.workspace,
+            mode=options.mode,
+            turn_id=state.hooks.turn_id,
+            agent_scope=agent_scope,
+            data=message_data(user_message, is_final=False),
+        ),
+        state,
+    )
 
     while state.iterations < options.max_iterations:
         state.iterations += 1
@@ -136,6 +200,7 @@ def _run_agent_loop_impl(
                 options=options,
                 iteration=iteration,
                 skill_manager=skill_manager,
+                hook_manager=hook_manager,
             )
             selected_tools = select_tools(registry, options, state, skill_manager)
             preparation = context_manager.prepare_before_request(
@@ -145,6 +210,14 @@ def _run_agent_loop_impl(
                 config=config,
                 prompt=prompt,
                 tools=selected_tools,
+                callbacks=_context_callbacks(
+                    hook_manager,
+                    context,
+                    state,
+                    options,
+                    iteration,
+                    agent_scope,
+                ),
             )
             request_estimate = TokenEstimate(
                 tokens=preparation.request_tokens,
@@ -153,13 +226,27 @@ def _run_agent_loop_impl(
             )
             for report in preparation.reports:
                 yield AgentEvent(kind="context", iteration=iteration, data=report.to_dict())
-            response = yield from collect_model_response(
-                provider=current_provider,
-                messages=state.messages,
-                tools=selected_tools,
-                prompt=prompt,
-                iteration=iteration,
-            )
+            if hook_manager is not None:
+                prompt = build_agent_prompt(
+                    context=context,
+                    registry=registry,
+                    state=state,
+                    options=options,
+                    iteration=iteration,
+                    skill_manager=skill_manager,
+                    hook_manager=hook_manager,
+                )
+            try:
+                response = yield from collect_model_response(
+                    provider=current_provider,
+                    messages=state.messages,
+                    tools=selected_tools,
+                    prompt=prompt,
+                    iteration=iteration,
+                )
+            finally:
+                if hook_manager is not None:
+                    hook_manager.consume_next_request(state.hooks)
             if response.usage:
                 context_manager.record_usage(state, response.usage, request_estimate)
         except KeyboardInterrupt:
@@ -172,6 +259,7 @@ def _run_agent_loop_impl(
             )
             return
         except (APIError, RuntimeError, ValueError) as exc:
+            _dispatch_agent_error(hook_manager, context, state, options, iteration, agent_scope, exc)
             yield AgentEvent(
                 kind="error",
                 iteration=iteration,
@@ -190,6 +278,15 @@ def _run_agent_loop_impl(
             if empty_response_count <= options.max_empty_responses:
                 state.messages.append(ConversationMessage(role="user", content=_empty_response_retry_prompt()))
                 continue
+            _dispatch_agent_error(
+                hook_manager,
+                context,
+                state,
+                options,
+                iteration,
+                agent_scope,
+                RuntimeError("模型返回了空回复"),
+            )
             yield AgentEvent(
                 kind="error",
                 iteration=iteration,
@@ -214,6 +311,20 @@ def _run_agent_loop_impl(
         state.messages.append(assistant_message)
         if memory is not None:
             memory.record_message(state, assistant_message)
+        _dispatch_hook(
+            hook_manager,
+            make_event(
+                "message_completed",
+                session_id=_hook_session_id(hook_manager),
+                workspace=context.workspace,
+                mode=options.mode,
+                turn_id=state.hooks.turn_id,
+                iteration=iteration,
+                agent_scope=agent_scope,
+                data=message_data(assistant_message, is_final=not response.tool_calls),
+            ),
+            state,
+        )
 
         if not response.tool_calls:
             state.unknown_tool_count = 0
@@ -235,6 +346,8 @@ def _run_agent_loop_impl(
             options,
             context_manager,
             memory,
+            hook_manager,
+            agent_scope,
         )
         if _all_unknown_tool_results(outcomes):
             state.unknown_tool_count += len(outcomes)
@@ -342,6 +455,7 @@ def build_agent_prompt(
     options: AgentOptions,
     iteration: int,
     skill_manager: SkillManager | None = None,
+    hook_manager: HookManager | None = None,
 ) -> PromptBundle:
     selected_tools = select_tools(registry, options, state, skill_manager)
     prompt_context = PromptContext(
@@ -361,6 +475,9 @@ def build_agent_prompt(
         memory_warnings=tuple(state.memory.warnings),
         active_skill_blocks=(
             skill_manager.active_prompt_blocks(state.skills) if skill_manager is not None else ()
+        ),
+        hook_instruction_blocks=(
+            hook_manager.prompt_blocks(state.hooks) if hook_manager is not None else ()
         ),
         skill_catalog=(skill_manager.catalog_items() if skill_manager is not None else ()),
     )
@@ -406,6 +523,8 @@ def execute_tool_batches(
     options: AgentOptions | None = None,
     context_manager: ContextManager | None = None,
     memory=None,
+    hook_manager: HookManager | None = None,
+    agent_scope: str = "main",
 ) -> Iterator[AgentEvent]:
     options = options or AgentOptions()
     batch = batch_tool_calls(calls, registry)
@@ -417,18 +536,47 @@ def execute_tool_batches(
         max_workers = max(1, len(batch.parallel_read_calls))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             results: list[ToolResult | None] = [None] * len(batch.parallel_read_calls)
+            result_sources: list[str] = ["tool"] * len(batch.parallel_read_calls)
             futures = []
             for index, call in enumerate(batch.parallel_read_calls):
+                denied = _hook_tool_denial(
+                    hook_manager,
+                    context,
+                    state,
+                    call,
+                    iteration,
+                    options,
+                    agent_scope,
+                )
+                if denied is not None:
+                    results[index] = denied
+                    result_sources[index] = "hook"
+                    continue
                 denied = _plan_mode_denial(registry, call, options)
                 if denied is not None:
                     results[index] = denied
+                    result_sources[index] = "plan"
                     continue
                 futures.append((index, executor.submit(execute_tool_call, registry, call, context)))
             for index, future in futures:
                 results[index] = future.result()
-        for call, result in zip(batch.parallel_read_calls, results, strict=False):
+        for index, (call, result) in enumerate(zip(batch.parallel_read_calls, results, strict=False)):
             if result is None:
                 result = ToolResult.failure("tool_exception", "工具执行未返回结果", {"tool": call.name})
+            source = result_sources[index] if index < len(result_sources) else _tool_result_source(result)
+            if source == "tool":
+                source = _tool_result_source(result)
+            _dispatch_tool_after(
+                hook_manager,
+                context,
+                state,
+                call,
+                result,
+                source,
+                iteration,
+                options,
+                agent_scope,
+            )
             context_report = None
             if context_manager is not None:
                 result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
@@ -443,9 +591,34 @@ def execute_tool_batches(
 
     for call in batch.serial_calls:
         yield AgentEvent(kind="tool_call", tool_call=call, iteration=iteration)
-        result = _plan_mode_denial(registry, call, options)
+        source = "hook"
+        result = _hook_tool_denial(
+            hook_manager,
+            context,
+            state,
+            call,
+            iteration,
+            options,
+            agent_scope,
+        )
         if result is None:
+            source = "plan"
+            result = _plan_mode_denial(registry, call, options)
+        if result is None:
+            source = "tool"
             result = execute_tool_call(registry, call, context)
+            source = _tool_result_source(result)
+        _dispatch_tool_after(
+            hook_manager,
+            context,
+            state,
+            call,
+            result,
+            source,
+            iteration,
+            options,
+            agent_scope,
+        )
         context_report = None
         if context_manager is not None:
             result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
@@ -522,3 +695,195 @@ def _all_unknown_tool_results(outcomes: list[tuple[ToolCall, ToolResult]]) -> bo
         not result.ok and result.error is not None and result.error.code == "unknown_tool"
         for _, result in outcomes
     )
+
+
+def _hook_session_id(manager: HookManager | None) -> str:
+    return manager.session_id if manager is not None else ""
+
+
+def _dispatch_hook(manager: HookManager | None, event, state: AgentState):  # noqa: ANN001, ANN202
+    if manager is None:
+        return None
+    try:
+        return manager.dispatch(event, state.hooks)
+    except Exception:
+        return None
+
+
+def _dispatch_turn_end(
+    manager: HookManager | None,
+    context: ToolContext,
+    state: AgentState,
+    options: AgentOptions,
+    stop_reason: str,
+    iteration: int,
+    agent_scope: str,
+) -> None:
+    if manager is None:
+        return
+    _dispatch_hook(
+        manager,
+        make_event(
+            "turn_end",
+            session_id=manager.session_id,
+            workspace=context.workspace,
+            mode=options.mode,
+            turn_id=state.hooks.turn_id,
+            iteration=iteration,
+            agent_scope=agent_scope,
+            data={"turn": {"stop_reason": stop_reason, "iterations": state.iterations}},
+        ),
+        state,
+    )
+
+
+def _dispatch_agent_error(
+    manager: HookManager | None,
+    context: ToolContext,
+    state: AgentState,
+    options: AgentOptions,
+    iteration: int,
+    agent_scope: str,
+    error: BaseException,
+) -> None:
+    if manager is None:
+        return
+    _dispatch_hook(
+        manager,
+        make_event(
+            "agent_error",
+            session_id=manager.session_id,
+            workspace=context.workspace,
+            mode=options.mode,
+            turn_id=state.hooks.turn_id,
+            iteration=iteration,
+            agent_scope=agent_scope,
+            data=error_data(error, category="provider"),
+        ),
+        state,
+    )
+
+
+def _context_callbacks(
+    manager: HookManager | None,
+    context: ToolContext,
+    state: AgentState,
+    options: AgentOptions,
+    iteration: int,
+    agent_scope: str,
+) -> ContextLifecycleCallbacks | None:
+    if manager is None:
+        return None
+
+    def before(values: dict[str, object]) -> None:
+        _dispatch_hook(
+            manager,
+            make_event(
+                "context_before_compact",
+                session_id=manager.session_id,
+                workspace=context.workspace,
+                mode=options.mode,
+                turn_id=state.hooks.turn_id,
+                iteration=iteration,
+                agent_scope=agent_scope,
+                data=context_data(**values),
+            ),
+            state,
+        )
+
+    def after(report) -> None:  # noqa: ANN001
+        _dispatch_hook(
+            manager,
+            make_event(
+                "context_after_compact",
+                session_id=manager.session_id,
+                workspace=context.workspace,
+                mode=options.mode,
+                turn_id=state.hooks.turn_id,
+                iteration=iteration,
+                agent_scope=agent_scope,
+                data=context_data(report),
+            ),
+            state,
+        )
+
+    return ContextLifecycleCallbacks(before_compact=before, after_compact=after)
+
+
+def _hook_tool_denial(
+    manager: HookManager | None,
+    context: ToolContext,
+    state: AgentState,
+    call: ToolCall,
+    iteration: int,
+    options: AgentOptions,
+    agent_scope: str,
+) -> ToolResult | None:
+    if manager is None:
+        return None
+    result = _dispatch_hook(
+        manager,
+        make_event(
+            "tool_before",
+            session_id=manager.session_id,
+            workspace=context.workspace,
+            mode=options.mode,
+            turn_id=state.hooks.turn_id,
+            iteration=iteration,
+            agent_scope=agent_scope,
+            data=tool_data(call),
+        ),
+        state,
+    )
+    if result is None or not result.denied:
+        return None
+    return ToolResult.failure(
+        "hook_denied",
+        result.deny_reason or f"Hook {result.denied_by} 拒绝工具调用",
+        {
+            "tool": call.name,
+            "rule_id": result.denied_by,
+            "source": "hook",
+        },
+        f"hook denied by {result.denied_by}: {result.deny_reason}",
+    )
+
+
+def _dispatch_tool_after(
+    manager: HookManager | None,
+    context: ToolContext,
+    state: AgentState,
+    call: ToolCall,
+    result: ToolResult,
+    source: str,
+    iteration: int,
+    options: AgentOptions,
+    agent_scope: str,
+) -> None:
+    if manager is None:
+        return
+    _dispatch_hook(
+        manager,
+        make_event(
+            "tool_after",
+            session_id=manager.session_id,
+            workspace=context.workspace,
+            mode=options.mode,
+            turn_id=state.hooks.turn_id,
+            iteration=iteration,
+            agent_scope=agent_scope,
+            data=tool_data(call, result, source=source),
+        ),
+        state,
+    )
+
+
+def _tool_result_source(result: ToolResult) -> str:
+    if result.ok or result.error is None:
+        return "tool"
+    if result.error.code == "permission_denied":
+        source = str(result.error.details.get("source", "permission"))
+        return "plan" if "Plan Mode" in result.summary else source
+    if result.error.code == "unknown_tool":
+        return "registry"
+    return "tool"

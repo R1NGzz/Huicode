@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from fnmatch import fnmatchcase
-
+from huicode.matching import match_exact_or_glob
 from huicode.permissions.base import PermissionRule
 from huicode.providers.base import ToolCall
 
@@ -19,15 +18,15 @@ def parse_rule_key(text: str) -> tuple[str, str]:
 
 
 def match_rule(rule: PermissionRule, call: ToolCall) -> bool:
-    if _canonical_tool(rule.tool) != _canonical_tool(call.name):
+    if canonical_tool_name(rule.tool) != canonical_tool_name(call.name):
         return False
     target = target_value_for_call(call)
-    return target == rule.pattern or fnmatchcase(target, rule.pattern)
+    return match_exact_or_glob(target, rule.pattern)
 
 
 def target_value_for_call(call: ToolCall) -> str:
     args = call.arguments
-    name = _canonical_tool(call.name)
+    name = canonical_tool_name(call.name)
     if name == "Bash":
         return _string_arg(args, "command")
     if name in {"Read", "Write", "Edit"}:
@@ -39,11 +38,10 @@ def target_value_for_call(call: ToolCall) -> str:
     return ""
 
 
-def _canonical_tool(name: str) -> str:
+def canonical_tool_name(name: str) -> str:
     return "Find" if name == "Glob" else name
 
 
 def _string_arg(args: dict[str, object], key: str) -> str:
     value = args.get(key)
     return value if isinstance(value, str) else ""
-

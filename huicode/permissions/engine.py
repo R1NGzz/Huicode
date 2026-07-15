@@ -82,7 +82,7 @@ def _check_sandbox(call: ToolCall, context: ToolContext, permissions: Permission
 
 
 def _check_internal_state_write(call: ToolCall, context: ToolContext) -> PermissionDecision | None:
-    protected = (".huicode/memory", ".huicode/sessions")
+    protected = (".huicode/memory", ".huicode/sessions", ".huicode/logs")
     workspace = (
         context.permissions.workspace
         if context.permissions and context.permissions.workspace

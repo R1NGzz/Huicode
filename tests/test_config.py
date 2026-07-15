@@ -286,6 +286,47 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.mcp["context7"]["args"], ["-y", "@upstash/context7-mcp"])
         self.assertEqual(config.mcp["context7"]["env"]["NODE_ENV"], "production")
 
+    def test_loads_nested_inline_hook_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                """protocol: openai
+model: test
+base_url: https://example.test
+api_key: key
+hooks:
+  - id: python-edit
+    event: tool_after
+    if:
+      all:
+        - field: tool.name
+          exact: Edit
+        - field: tool.arguments.path
+          glob: "**/*.py"
+    action:
+      type: prompt
+      content: "edited {{tool.arguments.path}}"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+        self.assertEqual(config.hooks[0]["id"], "python-edit")
+        self.assertEqual(config.hooks[0]["if"]["all"][1]["glob"], "**/*.py")
+
+    def test_rejects_non_list_hooks_with_yaml_location(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: https://example.test\napi_key: key\nhooks: nope\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "hooks"):
+                load_config(path)
+
+            path.write_text("protocol: [\n", encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, r"第 [12] 行第 1 列"):
+                load_config(path)
+
 
 if __name__ == "__main__":
     unittest.main()
