@@ -78,6 +78,20 @@ class SubagentConfig:
 
 
 @dataclass(frozen=True)
+class WorktreeConfig:
+    root: str = ".huicode/worktrees"
+    stale_after_days: int = 7
+    cleanup_interval_seconds: int = 3600
+    copy_files: tuple[str, ...] = (
+        "huicode.yaml",
+        ".huicode-permissions.local.yaml",
+    )
+    symlink_directories: tuple[str, ...] = ()
+    restore_ignored: tuple[str, ...] = ()
+    hooks_path: str | None = None
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     protocol: str
     model: str
@@ -93,6 +107,7 @@ class LLMConfig:
     mcp: dict[str, Any] = field(default_factory=dict)
     hooks: list[dict[str, Any]] = field(default_factory=list)
     subagents: SubagentConfig = field(default_factory=SubagentConfig)
+    worktrees: WorktreeConfig = field(default_factory=WorktreeConfig)
 
 
 class ConfigError(ValueError):
@@ -150,6 +165,12 @@ def load_config(path: str | Path) -> LLMConfig:
         subagents_raw = {}
     if not isinstance(subagents_raw, dict):
         raise ConfigError("配置字段 subagents 必须是 YAML 映射")
+
+    worktrees_raw = values.get("worktrees", {})
+    if worktrees_raw is None:
+        worktrees_raw = {}
+    if not isinstance(worktrees_raw, dict):
+        raise ConfigError("配置字段 worktrees 必须是 YAML 映射")
     model_aliases_raw = subagents_raw.get("model_aliases", {})
     if model_aliases_raw is None:
         model_aliases_raw = {}
@@ -247,6 +268,39 @@ def load_config(path: str | Path) -> LLMConfig:
             ),
             background_allowed_tools=background_tools,
             model_aliases=aliases,
+        ),
+        worktrees=WorktreeConfig(
+            root=_as_relative_path_string(
+                worktrees_raw.get("root", ".huicode/worktrees"),
+                "worktrees.root",
+            ),
+            stale_after_days=_as_int(
+                worktrees_raw.get("stale_after_days", 7),
+                "worktrees.stale_after_days",
+            ),
+            cleanup_interval_seconds=_as_int(
+                worktrees_raw.get("cleanup_interval_seconds", 3600),
+                "worktrees.cleanup_interval_seconds",
+            ),
+            copy_files=_as_relative_path_tuple(
+                worktrees_raw.get(
+                    "copy_files",
+                    ["huicode.yaml", ".huicode-permissions.local.yaml"],
+                ),
+                "worktrees.copy_files",
+            ),
+            symlink_directories=_as_relative_path_tuple(
+                worktrees_raw.get("symlink_directories", []),
+                "worktrees.symlink_directories",
+            ),
+            restore_ignored=_as_relative_path_tuple(
+                worktrees_raw.get("restore_ignored", []),
+                "worktrees.restore_ignored",
+            ),
+            hooks_path=_as_optional_relative_path_string(
+                worktrees_raw.get("hooks_path"),
+                "worktrees.hooks_path",
+            ),
         ),
         max_tokens=_as_int(values.get("max_tokens", 2048), "max_tokens"),
         temperature=_as_optional_float(values.get("temperature"), "temperature"),
@@ -412,6 +466,44 @@ def _as_optional_float(value: Any, field_name: str) -> float | None:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"配置字段 {field_name} 必须是数字") from exc
+
+
+def _as_non_empty_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"配置字段 {field_name} 必须是非空字符串")
+    return value.strip()
+
+
+def _as_optional_string(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _as_non_empty_string(value, field_name)
+
+
+def _as_relative_path_string(value: Any, field_name: str) -> str:
+    text = _as_non_empty_string(value, field_name).replace("\\", "/")
+    parts = text.split("/")
+    if (
+        text.startswith("/")
+        or ":" in parts[0]
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise ConfigError(f"配置字段 {field_name} 必须是工作区内相对路径")
+    return text
+
+
+def _as_optional_relative_path_string(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _as_relative_path_string(value, field_name)
+
+
+def _as_relative_path_tuple(value: Any, field_name: str) -> tuple[str, ...]:
+    items = _as_string_tuple(value, field_name)
+    return tuple(
+        _as_relative_path_string(item, f"{field_name}[{index}]")
+        for index, item in enumerate(items)
+    )
 
 
 def _as_positive_float(value: Any, field_name: str) -> float:

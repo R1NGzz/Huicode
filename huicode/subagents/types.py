@@ -14,6 +14,7 @@ from huicode.providers.base import ConversationMessage
 
 AgentSource = Literal["plugin", "builtin", "user", "project"]
 AgentKind = Literal["defined", "fork"]
+AgentIsolation = Literal["shared", "worktree"]
 TaskStatus = Literal[
     "queued",
     "running_foreground",
@@ -36,6 +37,7 @@ class AgentDefinition:
     instructions: str
     source: AgentSource
     source_path: Path
+    isolation: AgentIsolation = "shared"
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,10 @@ class SubagentResult:
     usage: dict[str, object] = field(default_factory=dict)
     error: str = ""
     duration_seconds: float = 0.0
+    worktree_path: str = ""
+    worktree_branch: str = ""
+    worktree_state: str = ""
+    worktree_reason: str = ""
 
 
 @dataclass
@@ -132,6 +138,10 @@ class SubagentTask:
     usage: dict[str, object] = field(default_factory=dict)
     summary: str = ""
     error: str = ""
+    worktree_path: str = ""
+    worktree_branch: str = ""
+    worktree_state: str = ""
+    worktree_reason: str = ""
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     background_event: threading.Event = field(default_factory=threading.Event, repr=False)
     done_event: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -153,6 +163,10 @@ class SubagentTaskView:
     usage: dict[str, object]
     summary: str
     error: str
+    worktree_path: str = ""
+    worktree_branch: str = ""
+    worktree_state: str = ""
+    worktree_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,6 +177,9 @@ class SubagentNotification:
     status: TaskStatus
     duration_seconds: float
     summary: str
+    worktree_path: str = ""
+    worktree_branch: str = ""
+    worktree_state: str = ""
 
 
 @dataclass(frozen=True)

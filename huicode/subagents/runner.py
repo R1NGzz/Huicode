@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
+from pathlib import Path
 
 from huicode.agent import AgentPromptOverrides, run_agent_loop
 from huicode.agent_events import AgentOptions, AgentState
@@ -12,11 +14,13 @@ from huicode.provider_factory import create_provider_with_model
 from huicode.providers.base import Provider
 from huicode.tools.base import FileReadCache, ToolContext
 from huicode.tools.registry import ToolRegistry
+from huicode.workspaces import WorkspaceContextLoader
+from huicode.worktrees import WorktreeHandle, WorktreeManager
 
 from .catalog import AgentCatalog
 from .filtering import TaskAwareToolRegistry
 from .history import select_protocol_safe_history
-from .types import SubagentLaunchRequest, SubagentResult, SubagentTask
+from .types import AgentDefinition, SubagentLaunchRequest, SubagentResult, SubagentTask
 
 
 class IsolatedSubagentRunner:
@@ -29,6 +33,8 @@ class IsolatedSubagentRunner:
         config: LLMConfig,
         catalog: AgentCatalog,
         hook_manager: HookManager | None = None,
+        worktree_manager: WorktreeManager | None = None,
+        workspace_context_loader: WorkspaceContextLoader | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -36,18 +42,95 @@ class IsolatedSubagentRunner:
         self.config = config
         self.catalog = catalog
         self.hook_manager = hook_manager
+        self.worktree_manager = worktree_manager
+        self.workspace_context_loader = workspace_context_loader
 
     def __call__(self, request: SubagentLaunchRequest, task: SubagentTask) -> SubagentResult:
         definition = self.catalog.get(request.role or "") if request.type == "defined" else None
         if request.type == "defined" and definition is None:
             return SubagentResult(task.id, "failed", "未知子 Agent 角色", "invalid_role", error=request.role or "")
+        worktree: WorktreeHandle | None = None
+        workspace = self.context.workspace
+        if definition is not None and definition.isolation == "worktree":
+            if self.worktree_manager is None:
+                return SubagentResult(
+                    task.id,
+                    "failed",
+                    "Worktree 管理器未初始化",
+                    "worktree_prepare_failed",
+                    error="Worktree 管理器未初始化",
+                )
+            try:
+                worktree = self.worktree_manager.prepare(task.id, definition.name)
+                workspace = self.worktree_manager.enter(worktree)
+            except Exception as exc:  # noqa: BLE001
+                if worktree is not None:
+                    try:
+                        self.worktree_manager.exit(worktree)
+                        self.worktree_manager.finalize(worktree, "failed")
+                    except Exception:
+                        pass
+                return SubagentResult(
+                    task.id,
+                    "failed",
+                    f"Worktree 准备失败: {exc}",
+                    "worktree_prepare_failed",
+                    error=str(exc),
+                    worktree_path=str(worktree.path) if worktree is not None else "",
+                    worktree_branch=worktree.branch if worktree is not None else "",
+                    worktree_state="retained" if worktree is not None else "",
+                    worktree_reason="进入隔离目录失败" if worktree is not None else "",
+                )
+        try:
+            result = self._execute(request, task, definition, workspace, worktree)
+        except Exception as exc:  # noqa: BLE001
+            result = SubagentResult(
+                task.id,
+                "failed",
+                f"子 Agent 运行失败: {exc}",
+                "error",
+                error=str(exc),
+            )
+        disposition = None
+        if worktree is not None and self.worktree_manager is not None:
+            errors: list[str] = []
+            try:
+                self.worktree_manager.exit(worktree)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"退出 Worktree 失败: {exc}")
+            try:
+                disposition = self.worktree_manager.finalize(worktree, result.status)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Worktree 结束处理失败: {exc}")
+            if errors:
+                combined = "; ".join(errors)
+                result = replace(
+                    result,
+                    error=f"{result.error}; {combined}" if result.error else combined,
+                )
+        return replace(
+            result,
+            worktree_path=str(worktree.path) if worktree is not None else "",
+            worktree_branch=worktree.branch if worktree is not None else "",
+            worktree_state=disposition.state if disposition is not None else "",
+            worktree_reason=disposition.reason if disposition is not None else "",
+        )
+
+    def _execute(
+        self,
+        request: SubagentLaunchRequest,
+        task: SubagentTask,
+        definition: AgentDefinition | None,
+        workspace: Path,
+        worktree: WorktreeHandle | None,
+    ) -> SubagentResult:
         permission = clone_permission_context(
             request.parent.permissions.context,
-            self.context.workspace,
+            workspace,
             requested_mode=definition.permission_mode if definition is not None else None,
         )
         child_context = ToolContext(
-            workspace=self.context.workspace,
+            workspace=workspace,
             timeout_seconds=self.context.timeout_seconds,
             max_output_chars=self.context.max_output_chars,
             permissions=permission,
@@ -57,6 +140,11 @@ class IsolatedSubagentRunner:
         if request.type == "fork":
             state.messages = list(select_protocol_safe_history(request.parent.messages))
         instructions = request.parent.project_instructions.strip()
+        if worktree is not None and self.workspace_context_loader is not None:
+            workspace_data = self.workspace_context_loader.load(workspace)
+            instructions = workspace_data.instructions.strip()
+            state.memory.memory_index_text = workspace_data.memory_index
+            state.memory.warnings = list(workspace_data.warnings)
         role_blocks: tuple[str, ...] = ()
         if definition is not None:
             role_block = (
@@ -64,6 +152,16 @@ class IsolatedSubagentRunner:
                 f"{definition.instructions}\n</huicode_instruction>"
             )
             role_blocks = (role_block,)
+        if worktree is not None:
+            worktree_block = (
+                '<huicode_instruction type="worktree" priority="highest">\n'
+                f"当前隔离工作目录: {worktree.path}\n"
+                f"当前独立分支: {worktree.branch}\n"
+                "所有文件和命令操作必须限制在当前隔离工作目录中，不得修改主工作区。\n"
+                "不要自行合并分支；完成后报告修改和验证结果。\n"
+                "</huicode_instruction>"
+            )
+            role_blocks = (*role_blocks, worktree_block)
         state.memory.instructions_text = instructions
         model = self.provider.model
         if definition is not None and definition.model != "inherit":
@@ -104,7 +202,7 @@ class IsolatedSubagentRunner:
                 config=self.config,
                 options=options,
                 hook_manager=self.hook_manager,
-                context_manager=ContextManager(self.context.workspace, self.config.context),
+                context_manager=ContextManager(workspace, self.config.context),
                 agent_scope=scope,
                 prompt_overrides=AgentPromptOverrides(
                     role_instruction_blocks=role_blocks,

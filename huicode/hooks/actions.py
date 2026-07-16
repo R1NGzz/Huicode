@@ -86,7 +86,8 @@ class HookActionExecutor:
         if dangerous is not None:
             return HookActionResult("failed", dangerous.reason)
         try:
-            cwd = resolve_workspace_path(self.workspace, action.cwd or ".")
+            event_workspace = Path(str(payload.get("workspace") or self.workspace)).resolve()
+            cwd = resolve_workspace_path(event_workspace, action.cwd or ".")
         except (OSError, ValueError) as exc:
             return HookActionResult("failed", str(exc))
         environment = os.environ.copy()

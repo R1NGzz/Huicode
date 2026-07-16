@@ -578,6 +578,10 @@ def _subagent_result_blocks(results) -> tuple[str, ...]:  # noqa: ANN001
                     f"usage: {usage}",
                     f"summary: {html.escape(result.summary)}",
                     f"error: {html.escape(result.error)}" if result.error else "",
+                    f"worktree_path: {html.escape(result.worktree_path)}" if result.worktree_path else "",
+                    f"worktree_branch: {html.escape(result.worktree_branch)}" if result.worktree_branch else "",
+                    f"worktree_state: {html.escape(result.worktree_state)}" if result.worktree_state else "",
+                    f"worktree_reason: {html.escape(result.worktree_reason)}" if result.worktree_reason else "",
                 ]
             ).strip()
         )

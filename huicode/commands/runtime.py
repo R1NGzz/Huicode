@@ -199,6 +199,10 @@ class CLICommandRuntime:
                     f"usage: {json.dumps(task.usage, ensure_ascii=False, sort_keys=True)}",
                     f"summary: {task.summary or 'none'}",
                     f"error: {task.error or 'none'}",
+                    f"worktree_path: {task.worktree_path or 'none'}",
+                    f"worktree_branch: {task.worktree_branch or 'none'}",
+                    f"worktree_state: {task.worktree_state or 'none'}",
+                    f"worktree_reason: {task.worktree_reason or 'none'}",
                 ]
             )
         tasks = self.subagent_manager.list_tasks()
@@ -208,6 +212,11 @@ class CLICommandRuntime:
             lines.append(
                 f"- {task.id} [{task.status}/{task.type}] role={task.role or 'none'} {summary}"
             )
+            if task.worktree_path:
+                lines.append(
+                    f"  worktree={task.worktree_state or 'active'} "
+                    f"branch={task.worktree_branch} path={task.worktree_path}"
+                )
         if not tasks:
             lines.append("- none")
         return "\n".join(lines)

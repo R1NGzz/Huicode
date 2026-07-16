@@ -18,6 +18,7 @@ _FIELDS = {
     "model",
     "max_iterations",
     "permission_mode",
+    "isolation",
 }
 
 
@@ -61,6 +62,9 @@ def parse_agent_file(path: Path, source: AgentSource) -> AgentDefinition:
     permission_mode = _required_string(values, "permission_mode")
     if permission_mode not in {"strict", "default", "permissive"}:
         raise AgentValidationError("permission_mode 只允许 strict、default 或 permissive")
+    isolation = values.get("isolation", "shared")
+    if not isinstance(isolation, str) or isolation not in {"shared", "worktree"}:
+        raise AgentValidationError("isolation 只允许 shared 或 worktree")
     if not body.strip():
         raise AgentValidationError("角色正文不能为空")
     return AgentDefinition(
@@ -71,6 +75,7 @@ def parse_agent_file(path: Path, source: AgentSource) -> AgentDefinition:
         model=model,  # type: ignore[arg-type]
         max_iterations=iterations,
         permission_mode=permission_mode,  # type: ignore[arg-type]
+        isolation=isolation,  # type: ignore[arg-type]
         instructions=body.strip(),
         source=source,
         source_path=path.resolve(),

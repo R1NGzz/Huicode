@@ -24,7 +24,7 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 统一 Slash Command 注册、分发和 Tab 补全
 - 两阶段加载的 Skill 系统与 isolated 子会话
 - 声明式生命周期 Hook、工具拦截与自动化动作
-- 定义式/Fork 式子 Agent 与进程内后台任务
+- 定义式/Fork 式子 Agent、进程内后台任务与 Git Worktree 隔离
 
 ## 工具系统
 
@@ -317,6 +317,7 @@ denied_tools: []
 model: inherit
 max_iterations: 20
 permission_mode: strict
+isolation: shared
 ---
 先定位事实和调用关系，再给出带文件路径的结论。不要修改文件。
 ```
@@ -333,6 +334,15 @@ subagents:
     haiku: deepseek-chat
     sonnet: deepseek-reasoner
     opus: deepseek-reasoner
+
+worktrees:
+  root: .huicode/worktrees
+  stale_after_days: 7
+  cleanup_interval_seconds: 3600
+  copy_files: [huicode.yaml, .huicode-permissions.local.yaml]
+  symlink_directories: [node_modules]
+  restore_ignored: [.env.local, fixtures/**/*.bin]
+  hooks_path: .githooks
 ```
 
 定义式任务默认在前台等待：短任务直接把摘要和独立 usage 返回给主 Agent；显式 `background: true`、运行超过前台时限，或交互终端中按 `Ctrl+B`，都会让任务继续在后台。非 TTY 环境没有按键监听，但显式后台和超时后台仍生效。Fork 从创建起强制后台。
@@ -347,7 +357,11 @@ subagents:
 /status
 ```
 
-子 Agent 的消息、上下文、权限临时规则、Read 缓存和 Token 统计互相隔离。`Agent` 与 `Skill` 在子 Agent 中被硬禁用，避免无限嵌套。后台默认只允许 `Read`、`Find`、`Search`；HuiCode 本章没有 Worktree 隔离，若自行放宽后台写工具，多个任务会共享同一工作区并可能产生写冲突。
+子 Agent 的消息、上下文、权限临时规则、Read 缓存和 Token 统计互相隔离。`Agent` 与 `Skill` 在子 Agent 中被硬禁用，避免无限嵌套。后台默认只允许 `Read`、`Find`、`Search`。
+
+定义式角色可把 `isolation` 改为 `worktree`。HuiCode 会从任务启动时的主仓库 `HEAD` 创建独立目录和分支，主工作区未提交修改不会带入；Fork 子 Agent 始终共享主工作区。所有工具都通过显式工作目录运行，进程不会调用 `chdir`。成功且干净的隔离任务会自动清理；存在未提交修改、未推送提交、失败或取消时会保留目录，并在任务结果中显示路径、分支和原因。HuiCode 不自动合并分支，检查完成后由用户或上层流程决定 `git merge`。
+
+Worktree 根目录必须位于仓库内并被 Git 忽略。`copy_files` 复制本地配置，`restore_ignored` 按文件或 glob 补回运行文件，`symlink_directories` 为大型依赖建立目录链接，`hooks_path` 配置目标 Worktree 的 Git Hooks。Windows 无法创建目录链接时会明确报错，不会静默复制。已有目录只有在 `.huicode/worktree.json` 的仓库、任务和路径标识完全匹配时才会恢复；恢复检查不调用 Git。
 
 ## Hook 系统
 
@@ -647,4 +661,4 @@ context:
 - `ToolSearch`
 - Skill 市场、远程分发和版本管理
 - Hook 热更新、显式优先级和 once 标记持久化
-- 子 Agent Worktree 隔离、多 Agent 团队编排和后台任务跨会话恢复
+- Worktree 自动合并、多 Agent 团队编排和后台任务跨会话恢复

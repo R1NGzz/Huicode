@@ -260,6 +260,10 @@ class SubagentManager:
             task.usage = dict(result.usage)
             task.summary = _sanitize_text(result.summary)
             task.error = _sanitize_text(result.error)
+            task.worktree_path = result.worktree_path
+            task.worktree_branch = result.worktree_branch
+            task.worktree_state = result.worktree_state
+            task.worktree_reason = result.worktree_reason
             task.done_event.set()
             if task.background:
                 completed = SubagentResult(
@@ -271,6 +275,10 @@ class SubagentManager:
                     usage=_redact_usage(task.usage),
                     error=_clip(task.error, 1000),
                     duration_seconds=max(0.0, task.completed_at - (task.started_at or task.created_at)),
+                    worktree_path=task.worktree_path,
+                    worktree_branch=task.worktree_branch,
+                    worktree_state=task.worktree_state,
+                    worktree_reason=task.worktree_reason,
                 )
                 self._pending_results.append(completed)
                 self._notifications.put(
@@ -281,6 +289,9 @@ class SubagentManager:
                         status=task.status,
                         duration_seconds=completed.duration_seconds,
                         summary=_clip(task.summary or task.error, 160),
+                        worktree_path=task.worktree_path,
+                        worktree_branch=task.worktree_branch,
+                        worktree_state=task.worktree_state,
                     )
                 )
 
@@ -307,6 +318,10 @@ class SubagentManager:
             usage=dict(task.usage),
             summary=task.summary,
             error=task.error,
+            worktree_path=task.worktree_path,
+            worktree_branch=task.worktree_branch,
+            worktree_state=task.worktree_state,
+            worktree_reason=task.worktree_reason,
         )
 
 

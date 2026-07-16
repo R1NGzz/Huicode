@@ -52,6 +52,9 @@ from huicode.subagents.types import ParentAgentSnapshot, PermissionSnapshot
 from huicode.tools.base import FileReadCache, ToolContext
 from huicode.tools.registry import create_default_registry
 from huicode.tui import format_permission_request, render_agent_event
+from huicode.workspaces import WorkspaceContextLoader
+from huicode.worktrees import WorktreeManager
+from huicode.worktrees.cleanup import WorktreeCleanupService
 
 try:
     from prompt_toolkit import PromptSession
@@ -174,6 +177,11 @@ def _run_chat(
         print(f"Hook 配置错误: {exc}")
         return 2
 
+    worktree_manager = WorktreeManager(workspace, config.worktrees)
+    workspace_context_loader = WorkspaceContextLoader(config.memory)
+    worktree_cleanup = WorktreeCleanupService(worktree_manager)
+    worktree_cleanup.start()
+
     subagent_runner = IsolatedSubagentRunner(
         provider=provider,
         registry=tool_registry,
@@ -181,6 +189,8 @@ def _run_chat(
         config=config,
         catalog=agent_catalog,
         hook_manager=hook_manager,
+        worktree_manager=worktree_manager,
+        workspace_context_loader=workspace_context_loader,
     )
     subagent_manager = SubagentManager(
         agent_catalog,
@@ -355,6 +365,7 @@ def _run_chat(
                 reason="eof",
                 subagent_manager=subagent_manager,
                 notification_stop=notification_stop,
+                worktree_cleanup=worktree_cleanup,
             )
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
@@ -394,6 +405,7 @@ def _run_chat(
                 reason="exit",
                 subagent_manager=subagent_manager,
                 notification_stop=notification_stop,
+                worktree_cleanup=worktree_cleanup,
             )
 
 
@@ -474,9 +486,12 @@ def _close_resources_and_return(
     reason: str = "exit",
     subagent_manager: SubagentManager | None = None,
     notification_stop: threading.Event | None = None,
+    worktree_cleanup: WorktreeCleanupService | None = None,
 ) -> int:
     if notification_stop is not None:
         notification_stop.set()
+    if worktree_cleanup is not None:
+        worktree_cleanup.close()
     if subagent_manager is not None:
         subagent_manager.close()
     if hook_manager is not None:
@@ -550,6 +565,11 @@ def _subagent_notification_pump(
                 f"\nHuiCode> 子 Agent {notice.task_id} [{notice.type}/{role}] "
                 f"{notice.status} ({notice.duration_seconds:.2f}s)\n  {notice.summary}"
             )
+            if notice.worktree_path:
+                message += (
+                    f"\n  worktree: {notice.worktree_state} "
+                    f"{notice.worktree_branch} {notice.worktree_path}"
+                )
             if prompt_session is not None:
                 try:
                     from prompt_toolkit.application import run_in_terminal

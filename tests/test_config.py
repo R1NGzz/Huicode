@@ -6,6 +6,33 @@ from huicode.config import ConfigError, load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_worktree_defaults_full_config_and_path_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = "protocol: openai\nmodel: test\nbase_url: https://example.test\napi_key: secret\n"
+            path = root / "config.yaml"
+            path.write_text(base, encoding="utf-8")
+            defaults = load_config(path).worktrees
+            self.assertEqual(defaults.root, ".huicode/worktrees")
+            self.assertEqual(defaults.stale_after_days, 7)
+            path.write_text(
+                base
+                + "worktrees:\n"
+                + "  root: .huicode/wt\n"
+                + "  stale_after_days: 3\n"
+                + "  cleanup_interval_seconds: 60\n"
+                + "  copy_files: [huicode.yaml]\n"
+                + "  symlink_directories: [node_modules]\n"
+                + "  restore_ignored: [fixtures/**/*.bin]\n"
+                + "  hooks_path: .githooks\n",
+                encoding="utf-8",
+            )
+            config = load_config(path).worktrees
+            self.assertEqual(config.root, ".huicode/wt")
+            self.assertEqual(config.symlink_directories, ("node_modules",))
+            path.write_text(base + "worktrees:\n  root: ../outside\n", encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(path)
     def test_loads_core_fields_and_thinking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "huicode.yaml"
