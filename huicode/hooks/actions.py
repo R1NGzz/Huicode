@@ -29,11 +29,20 @@ from .types import (
 
 
 PromptInjector = Callable[[HookPromptBlock], None]
+SubagentSubmitter = Callable[[str, str], str]
 
 
 class HookActionExecutor:
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        subagent_submitter: SubagentSubmitter | None = None,
+    ) -> None:
         self.workspace = workspace.resolve()
+        self.subagent_submitter = subagent_submitter
+
+    def set_subagent_submitter(self, submitter: SubagentSubmitter | None) -> None:
+        self.subagent_submitter = submitter
 
     def execute(
         self,
@@ -53,7 +62,22 @@ class HookActionExecutor:
             inject_prompt(HookPromptBlock(rule.id, action.scope, content, rule.event))
             return HookActionResult("success", "提示词已注入", data={"scope": action.scope})
         if isinstance(action, SubagentAction):
-            return HookActionResult("skipped", "SubAgent 动作尚未实现")
+            agent_scope = str(payload.get("agent_scope", "main"))
+            if agent_scope.startswith("subagent:"):
+                return HookActionResult("skipped", "recursion_guard")
+            if self.subagent_submitter is None:
+                return HookActionResult("skipped", "SubAgent 提交器不可用")
+            task = render_template(action.task, payload)
+            role = render_template(action.role, payload).strip() or "general"
+            try:
+                task_id = self.subagent_submitter(role, task)
+            except Exception as exc:  # noqa: BLE001 - Hook 必须失败开放
+                return HookActionResult("failed", f"SubAgent 提交失败: {exc}")
+            return HookActionResult(
+                "success",
+                f"SubAgent 已提交: {task_id}",
+                data={"task_id": task_id, "role": role},
+            )
         return HookActionResult("failed", "未知 Hook 动作")
 
     def _run_command(self, action: CommandAction, rule: HookRule, payload: dict[str, Any]) -> HookActionResult:

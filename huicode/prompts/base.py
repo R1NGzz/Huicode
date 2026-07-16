@@ -59,6 +59,10 @@ class PromptContext:
     memory_enabled: bool = False
     memory_index: str = ""
     memory_warnings: tuple[str, ...] = ()
+    agent_catalog: tuple[tuple[str, str], ...] = ()
+    role_instruction_blocks: tuple[str, ...] = ()
+    subagent_result_blocks: tuple[str, ...] = ()
+    stable_modules_override: tuple[PromptModule, ...] | None = None
 
 
 @dataclass(frozen=True)

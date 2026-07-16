@@ -17,6 +17,8 @@ from huicode.providers.base import Provider
 from huicode.providers.base import ConversationMessage
 from huicode.skills.manager import SkillManager
 from huicode.skills.types import SkillRunResult
+from huicode.subagents.catalog import AgentCatalog
+from huicode.subagents.manager import SubagentManager
 from huicode.tools.base import ToolContext
 from huicode.tools.registry import ToolRegistry
 
@@ -43,6 +45,8 @@ class CLICommandRuntime:
         skill_manager: SkillManager | None = None,
         isolated_skill_runner: Callable[[str, str], SkillRunResult] | None = None,
         hook_manager: HookManager | None = None,
+        agent_catalog: AgentCatalog | None = None,
+        subagent_manager: SubagentManager | None = None,
         output: TextIO | None = None,
     ) -> None:
         self.provider = provider
@@ -57,6 +61,8 @@ class CLICommandRuntime:
         self.skill_manager = skill_manager
         self.isolated_skill_runner = isolated_skill_runner
         self.hook_manager = hook_manager
+        self.agent_catalog = agent_catalog
+        self.subagent_manager = subagent_manager
         self.output = output or sys.stdout
         self._send_user_message = send_user_message
         self._mode: CommandMode = "default"
@@ -133,11 +139,78 @@ class CLICommandRuntime:
             self.skill_manager.clear_state(self.state.skills)
         if self.hook_manager is not None:
             self.hook_manager.clear_transient(self.state.hooks)
+        if self.subagent_manager is not None:
+            self.subagent_manager.clear()
         if self.memory_manager is not None:
             self.memory_manager.clear_current_session(self.state)
         self._mode = "default"
         self.refresh_status()
         return "本次工作上下文和计划状态已清空，已开启新会话。"
+
+    def agent_status(self, arguments: str) -> str:
+        if self.agent_catalog is None:
+            return "子 Agent 系统未启用"
+        target = arguments.strip().lower()
+        if target:
+            definition = self.agent_catalog.get(target)
+            if definition is None:
+                return f"未知子 Agent 角色: {arguments}"
+            return "\n".join(
+                [
+                    f"agent: {definition.name}",
+                    f"description: {definition.description}",
+                    f"source: {definition.source}",
+                    f"model: {definition.model}",
+                    f"max_iterations: {definition.max_iterations}",
+                    f"permission: {definition.permission_mode}",
+                    f"allowed_tools: {', '.join(definition.allowed_tools) or 'none'}",
+                    f"denied_tools: {', '.join(definition.denied_tools) or 'none'}",
+                    f"entry: {definition.source_path}",
+                ]
+            )
+        lines = ["agents:"]
+        for definition in self.agent_catalog.list():
+            lines.append(
+                f"- {definition.name} [{definition.source}/{definition.model}] "
+                f"{definition.description}"
+            )
+        if len(lines) == 1:
+            lines.append("- none")
+        lines.append("使用 /agents <name> 查看安全元数据。")
+        return "\n".join(lines)
+
+    def task_status(self, arguments: str) -> str:
+        if self.subagent_manager is None:
+            return "子 Agent 系统未启用"
+        target = arguments.strip()
+        if target:
+            task = self.subagent_manager.task_detail(target)
+            if task is None:
+                return f"未知子 Agent 任务: {target}"
+            return "\n".join(
+                [
+                    f"task: {task.id}",
+                    f"type: {task.type}",
+                    f"role: {task.role or 'none'}",
+                    f"status: {task.status}",
+                    f"background: {str(task.background).lower()}",
+                    f"iterations: {task.iterations}",
+                    f"stop_reason: {task.stop_reason or 'none'}",
+                    f"usage: {json.dumps(task.usage, ensure_ascii=False, sort_keys=True)}",
+                    f"summary: {task.summary or 'none'}",
+                    f"error: {task.error or 'none'}",
+                ]
+            )
+        tasks = self.subagent_manager.list_tasks()
+        lines = ["tasks:"]
+        for task in tasks:
+            summary = (task.summary or task.task).replace("\n", " ")[:100]
+            lines.append(
+                f"- {task.id} [{task.status}/{task.type}] role={task.role or 'none'} {summary}"
+            )
+        if not tasks:
+            lines.append("- none")
+        return "\n".join(lines)
 
     def run_skill(self, name: str, arguments: str) -> str:
         if self.skill_manager is None:
@@ -261,8 +334,15 @@ class CLICommandRuntime:
             f"memory: {self._format_memory_summary(compact=True)}",
             f"skills: {self._format_skill_summary()}",
             f"hooks: {self._format_hook_summary()}",
+            f"subagents: {self._format_subagent_summary()}",
         ]
         return "\n".join(lines)
+
+    def _format_subagent_summary(self) -> str:
+        if self.subagent_manager is None:
+            return "queued=0 running=0 ready=0 failed=0"
+        status = self.subagent_manager.summary()
+        return " ".join(f"{key}={status[key]}" for key in ("queued", "running", "ready", "failed"))
 
     def _format_skill_summary(self) -> str:
         if self.skill_manager is None:
@@ -370,8 +450,14 @@ class CLICommandRuntime:
         return (
             f"{self.mode_label()}  tokens: {last}/{tokens['window']}  "
             f"permission: {self.permission_context.mode}  memory: {self._memory_toolbar_status()} "
-            f"skills: {len(self.state.skills.active)}"
+            f"skills: {len(self.state.skills.active)}  tasks: {self._task_toolbar_status()}"
         )
+
+    def _task_toolbar_status(self) -> str:
+        if self.subagent_manager is None:
+            return "0/0"
+        status = self.subagent_manager.summary()
+        return f"{status['running'] + status['queued']}/{status['ready']}"
 
     def _memory_toolbar_status(self) -> str:
         if self.memory_manager is None:

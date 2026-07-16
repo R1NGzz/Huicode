@@ -110,6 +110,7 @@ class HttpAction:
 class SubagentAction:
     type: Literal["subagent"] = "subagent"
     task: str = ""
+    role: str = "general"
 
 
 HookAction: TypeAlias = CommandAction | PromptAction | HttpAction | SubagentAction

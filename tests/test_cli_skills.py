@@ -68,7 +68,10 @@ class CLISkillTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(provider.calls), 1)
         self.assertIn("FOCUS Focus On API", provider.calls[0]["prompt"].dynamic_text())
-        self.assertEqual({tool.name for tool in provider.calls[0]["tools"]}, {"Read", "Skill"})
+        self.assertEqual(
+            {tool.name for tool in provider.calls[0]["tools"]},
+            {"Read", "Skill", "Agent"},
+        )
         self.assertIn("active=none", output.getvalue())
         self.assertIn("focus [shared/project]", output.getvalue())
         self.assertIn("skill: focus", output.getvalue())

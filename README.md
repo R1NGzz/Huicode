@@ -1,6 +1,6 @@
 # HuiCode
 
-HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、生命周期 Hook、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
+HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、子 Agent、生命周期 Hook、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
 
 ## 能力概览
 
@@ -24,6 +24,7 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 统一 Slash Command 注册、分发和 Tab 补全
 - 两阶段加载的 Skill 系统与 isolated 子会话
 - 声明式生命周期 Hook、工具拦截与自动化动作
+- 定义式/Fork 式子 Agent 与进程内后台任务
 
 ## 工具系统
 
@@ -214,7 +215,7 @@ rules:
 
 命令由统一注册中心提供元数据、帮助、别名、分发和 Tab 补全。命令名大小写不敏感，未知命令会提示 `/help`，不会被当成普通问题发给模型。启动时如果名称或别名冲突，HuiCode 会直接报告命令注册错误并退出。
 
-十个核心公开命令：
+十二个核心公开命令：
 
 ```text
 /help [command]
@@ -227,6 +228,8 @@ rules:
 /permission [strict|default|permissive]
 /status
 /skill [name]
+/agents [name]
+/tasks [task-id]
 ```
 
 有效 Skill 会动态追加到公开命令，例如内置的 `/commit [arguments]`、`/review [arguments]` 和 `/test [arguments]`。项目级或用户级同名 Skill 可以覆盖内置版本。
@@ -286,6 +289,65 @@ model: optional-model-name
 多个 active shared Skill 同时存在时，普通工具取所有白名单的交集；Plan Mode 再与只读工具取交集。系统 `Skill` 加载工具始终可用，但 Skill 内执行 Read、Bash 等普通工具仍走现有权限系统。
 
 每次顶层输入前 HuiCode 会检查项目级和用户级 Skill 是否变化。合法更新会原子刷新目录、命令和 active SOP；未知工具或命令冲突会保留上一份有效快照，并在 `/status` 显示 reload error。`/clear` 会清除 active Skill、工具限制和当前轮模型覆盖，但不会删除 Skill 文件或目录。
+
+## 子 Agent 系统
+
+主 Agent 始终可以调用固定 Schema 的系统工具 `Agent`，把独立任务交给定义式或 Fork 式子 Agent：
+
+- `defined`：从干净消息历史和固定角色开始，需要提供 `role`。
+- `fork`：从父对话最近的完整工具协议边界分叉，继承稳定 Prompt 和工具快照，始终后台运行。
+
+角色按以下优先级覆盖：
+
+```text
+项目级：<workspace>/.huicode/agents/*.md
+用户级：~/.huicode/agents/*.md
+内置：huicode/subagents/builtin/*.md
+插件：`HUICODE_PLUGIN_AGENT_PATHS` 指向的角色目录（多个目录按系统路径分隔符分隔）
+```
+
+角色示例：
+
+```markdown
+---
+name: explorer
+description: 只读调查项目结构和调用链
+allowed_tools: [Read, Find, Search]
+denied_tools: []
+model: inherit
+max_iterations: 20
+permission_mode: strict
+---
+先定位事实和调用关系，再给出带文件路径的结论。不要修改文件。
+```
+
+`model` 只允许 `inherit`、`haiku`、`sonnet`、`opus`。后三者需要在主配置中映射为真实模型名：
+
+```yaml
+subagents:
+  foreground_timeout_seconds: 10
+  max_background_tasks: 4
+  shutdown_wait_seconds: 2
+  background_allowed_tools: [Read, Find, Search]
+  model_aliases:
+    haiku: deepseek-chat
+    sonnet: deepseek-reasoner
+    opus: deepseek-reasoner
+```
+
+定义式任务默认在前台等待：短任务直接把摘要和独立 usage 返回给主 Agent；显式 `background: true`、运行超过前台时限，或交互终端中按 `Ctrl+B`，都会让任务继续在后台。非 TTY 环境没有按键监听，但显式后台和超时后台仍生效。Fork 从创建起强制后台。
+
+后台完成只通知 TUI，不会自动调用模型。结果会在下一次主请求中通过一次性 `subagent_results` 系统上下文交付；Provider 请求失败时结果保留，完整响应后才消费。使用以下命令观察状态：
+
+```text
+/agents
+/agents explorer
+/tasks
+/tasks task-ab12cd34
+/status
+```
+
+子 Agent 的消息、上下文、权限临时规则、Read 缓存和 Token 统计互相隔离。`Agent` 与 `Skill` 在子 Agent 中被硬禁用，避免无限嵌套。后台默认只允许 `Read`、`Find`、`Search`；HuiCode 本章没有 Worktree 隔离，若自行放宽后台写工具，多个任务会共享同一工作区并可能产生写冲突。
 
 ## Hook 系统
 
@@ -358,11 +420,11 @@ hooks:
 - `command`：从 UTF-8 stdin 接收事件 JSON；`tool_before` 下退出码 `2` 表示明确拒绝，stderr 是拒绝原因。
 - `prompt`：以 `<huicode_instruction type="hook">` 动态系统指令注入，支持 `next_request`、`turn`、`session`，不会进入用户历史。
 - `http`：请求体是同一事件 JSON；`tool_before` 的 2xx JSON `{"decision":"deny","reason":"..."}` 表示明确拒绝。
-- `subagent`：当前只记录 `skipped` 占位，不启动模型。
+- `subagent`：提交真实的定义式后台子 Agent；可用 `role` 指定角色，默认 `general`。子 Agent scope 再次命中时会记录 `recursion_guard`，不会递归创建任务。
 
 `once: true` 让规则在当前进程第一次匹配后不再运行；`async: true` 只适用于不需要即时结果的动作；`timeout_seconds` 范围为 1 到 300。`tool_before` 和 prompt 动作不能异步。工具被 Hook 拒绝后不会弹权限确认，拒绝会作为 `hook_denied` 工具结果回灌模型，Agent Loop 可以继续调整。
 
-Hook 命令仍受危险命令黑名单和项目 cwd 沙箱保护。运行失败默认不刷屏、不终止 Agent，详情追加到 `<workspace>/.huicode/logs/hooks.jsonl`；`/status` 显示 effective、disabled、pending、failed、denied 和日志路径。退出时后台动作最多收拢 2 秒。配置错误会在启动阶段指出规则 id、来源和字段并返回状态码 2；本章不支持 Hook 热更新、显式优先级、once 跨进程持久化或真实 SubAgent 动作。
+Hook 命令仍受危险命令黑名单和项目 cwd 沙箱保护。运行失败默认不刷屏、不终止 Agent，详情追加到 `<workspace>/.huicode/logs/hooks.jsonl`；`/status` 显示 effective、disabled、pending、failed、denied 和日志路径。退出时后台动作最多收拢 2 秒。配置错误会在启动阶段指出规则 id、来源和字段并返回状态码 2；本章不支持 Hook 热更新、显式优先级或 once 跨进程持久化。
 
 ## Agent Loop
 
@@ -566,6 +628,8 @@ context:
 - `/permission [strict|default|permissive]`：查看或切换权限模式
 - `/status`：聚合查看模式、Provider、Token、上下文、权限、MCP、记忆、Skill 和 Hook
 - `/skill [name]`：列出已加载/已激活 Skill，或查看指定 Skill 的来源、模式和工具白名单
+- `/agents [name]`：列出子 Agent 角色，或查看指定角色的安全元数据
+- `/tasks [task-id]`：列出当前进程任务，或查看状态、摘要、停止原因和 usage
 - `/commit [arguments]`：运行当前有效的 commit Skill
 - `/review [arguments]`：运行当前有效的 review Skill，默认使用 isolated 子会话
 - `/test [arguments]`：运行当前有效的 test Skill，默认使用 isolated 子会话
@@ -580,8 +644,7 @@ context:
 - 完整审计日志
 - 操作系统级容器沙箱
 - 用户交互式确认之外的权限 UI
-- 通用子 Agent 或 `TaskCreate`
 - `ToolSearch`
 - Skill 市场、远程分发和版本管理
 - Hook 热更新、显式优先级和 once 标记持久化
-- Hook SubAgent 动作的真实执行
+- 子 Agent Worktree 隔离、多 Agent 团队编排和后台任务跨会话恢复

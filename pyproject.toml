@@ -20,3 +20,4 @@ include = ["huicode*"]
 
 [tool.setuptools.package-data]
 "huicode.skills" = ["builtin/*/SKILL.md"]
+"huicode.subagents" = ["builtin/*.md"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -16,6 +17,31 @@ class ToolContext:
     timeout_seconds: int = 10
     max_output_chars: int = 6000
     permissions: "PermissionContext | None" = None
+    read_cache: "FileReadCache | None" = None
+
+
+class FileReadCache:
+    def __init__(self) -> None:
+        self._values: dict[tuple[str, int, int], str] = {}
+        self._lock = threading.Lock()
+
+    def get(self, path: Path) -> str | None:
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+        with self._lock:
+            return self._values.get(key)
+
+    def put(self, path: Path, content: str) -> None:
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+        with self._lock:
+            for stale in [item for item in self._values if item[0] == key[0] and item != key]:
+                self._values.pop(stale, None)
+            self._values[key] = content
+
+    def clear(self) -> None:
+        with self._lock:
+            self._values.clear()
 
 
 @dataclass(frozen=True)

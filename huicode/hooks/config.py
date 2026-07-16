@@ -291,8 +291,12 @@ def _parse_action(
         return HttpAction(url=url, method=method, headers=headers, expected_status=expected)
     if action_type == "subagent":
         task = _action_string(raw, "task", rule_id, source_path)
+        role = str(raw.get("role", "general")).strip()
+        if not role:
+            raise _error(rule_id, source_path, f"{prefix}.role", "不能为空")
         _validate_templates(task, event, rule_id, source_path, f"{prefix}.task")
-        return SubagentAction(task=task)
+        _validate_templates(role, event, rule_id, source_path, f"{prefix}.role")
+        return SubagentAction(task=task, role=role)
     raise _error(rule_id, source_path, "action.type", f"未知动作 {action_type or '<empty>'}")
 
 

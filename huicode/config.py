@@ -10,6 +10,31 @@ except ImportError as exc:  # pragma: no cover - 项目依赖缺失时必须明�
     raise RuntimeError("HuiCode 需要 PyYAML，请先安装项目依赖") from exc
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(loader, node, deep=False):  # noqa: ANN001, ANN202
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"duplicate key: {key}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
 @dataclass(frozen=True)
 class ThinkingConfig:
     enabled: bool = False
@@ -44,6 +69,15 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True)
+class SubagentConfig:
+    foreground_timeout_seconds: float = 10.0
+    max_background_tasks: int = 4
+    shutdown_wait_seconds: float = 2.0
+    background_allowed_tools: tuple[str, ...] = ("Read", "Find", "Search")
+    model_aliases: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     protocol: str
     model: str
@@ -58,6 +92,7 @@ class LLMConfig:
     show_usage: bool = False
     mcp: dict[str, Any] = field(default_factory=dict)
     hooks: list[dict[str, Any]] = field(default_factory=list)
+    subagents: SubagentConfig = field(default_factory=SubagentConfig)
 
 
 class ConfigError(ValueError):
@@ -109,6 +144,30 @@ def load_config(path: str | Path) -> LLMConfig:
         hooks_raw = []
     if not isinstance(hooks_raw, list) or not all(isinstance(item, dict) for item in hooks_raw):
         raise ConfigError("配置字段 hooks 必须是 YAML 映射列表")
+
+    subagents_raw = values.get("subagents", {})
+    if subagents_raw is None:
+        subagents_raw = {}
+    if not isinstance(subagents_raw, dict):
+        raise ConfigError("配置字段 subagents 必须是 YAML 映射")
+    model_aliases_raw = subagents_raw.get("model_aliases", {})
+    if model_aliases_raw is None:
+        model_aliases_raw = {}
+    if not isinstance(model_aliases_raw, dict):
+        raise ConfigError("配置字段 subagents.model_aliases 必须是 YAML 映射")
+    aliases = _as_string_map(model_aliases_raw, "subagents.model_aliases")
+    unknown_aliases = sorted(set(aliases) - {"haiku", "sonnet", "opus"})
+    if unknown_aliases:
+        raise ConfigError(
+            "配置字段 subagents.model_aliases 包含未知别名: " + ", ".join(unknown_aliases)
+        )
+    background_tools_raw = subagents_raw.get(
+        "background_allowed_tools", ["Read", "Find", "Search"]
+    )
+    background_tools = _as_string_tuple(
+        background_tools_raw,
+        "subagents.background_allowed_tools",
+    )
 
     context = ContextConfig(
         enabled=_as_bool(context_raw.get("enabled", True), "context.enabled"),
@@ -173,6 +232,22 @@ def load_config(path: str | Path) -> LLMConfig:
         headers=_as_string_map(headers_raw, "headers"),
         mcp=mcp_raw,
         hooks=hooks_raw,
+        subagents=SubagentConfig(
+            foreground_timeout_seconds=_as_positive_float(
+                subagents_raw.get("foreground_timeout_seconds", 10),
+                "subagents.foreground_timeout_seconds",
+            ),
+            max_background_tasks=_as_int(
+                subagents_raw.get("max_background_tasks", 4),
+                "subagents.max_background_tasks",
+            ),
+            shutdown_wait_seconds=_as_positive_float(
+                subagents_raw.get("shutdown_wait_seconds", 2),
+                "subagents.shutdown_wait_seconds",
+            ),
+            background_allowed_tools=background_tools,
+            model_aliases=aliases,
+        ),
         max_tokens=_as_int(values.get("max_tokens", 2048), "max_tokens"),
         temperature=_as_optional_float(values.get("temperature"), "temperature"),
         show_usage=_as_bool(values.get("show_usage", False), "show_usage"),
@@ -188,7 +263,7 @@ def load_config(path: str | Path) -> LLMConfig:
 
 def _parse_minimal_yaml(text: str) -> dict[str, Any]:
     try:
-        root = yaml.safe_load(text)
+        root = yaml.load(text, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         location = f"第 {mark.line + 1} 行第 {mark.column + 1} 列" if mark is not None else "未知位置"
@@ -339,6 +414,16 @@ def _as_optional_float(value: Any, field_name: str) -> float | None:
         raise ConfigError(f"配置字段 {field_name} 必须是数字") from exc
 
 
+def _as_positive_float(value: Any, field_name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"配置字段 {field_name} 必须是数字") from exc
+    if parsed <= 0:
+        raise ConfigError(f"配置字段 {field_name} 必须大于 0")
+    return parsed
+
+
 def _as_bool(value: Any, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -357,6 +442,20 @@ def _as_string_map(value: dict[str, Any], field_name: str) -> dict[str, str]:
             raise ConfigError(f"配置字段 {field_name}.{name} 不能为空")
         result[name] = str(raw_value).strip()
     return result
+
+
+def _as_string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ConfigError(f"配置字段 {field_name} 必须是字符串列表")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(f"配置字段 {field_name} 中每一项都必须是非空字符串")
+        name = item.strip()
+        if name in result:
+            raise ConfigError(f"配置字段 {field_name} 不能包含重复工具: {name}")
+        result.append(name)
+    return tuple(result)
 
 
 def _validate_context_config(context: ContextConfig) -> None:

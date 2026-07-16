@@ -18,5 +18,5 @@ def create_provider(config: LLMConfig) -> Provider:
 
 def create_provider_with_model(config: LLMConfig, model: str) -> Provider:
     if not isinstance(model, str) or not model.strip():
-        raise ValueError("Skill model 必须是非空字符串")
+        raise ValueError("覆盖 model 必须是非空字符串")
     return create_provider(replace(config, model=model.strip()))

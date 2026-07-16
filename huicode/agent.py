@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import html
 import os
 import platform
 import re
 import sys
 import uuid
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, TextIO
+from typing import TYPE_CHECKING, Iterator, TextIO
 
 from huicode.context import ContextLifecycleCallbacks, ContextManager, TokenEstimate
 from huicode.agent_events import AgentEvent, AgentOptions, AgentState, CollectedResponse, ToolBatch
@@ -24,6 +26,21 @@ from huicode.tools.base import ToolContext, ToolResult
 from huicode.tools.executor import execute_tool_call
 from huicode.tools.registry import ToolRegistry
 from huicode.tui import render_agent_event
+
+if TYPE_CHECKING:
+    from huicode.prompts.base import PromptModule
+    from huicode.subagents.manager import SubagentManager
+
+
+class AgentPromptOverrides:
+    def __init__(
+        self,
+        *,
+        role_instruction_blocks: tuple[str, ...] = (),
+        stable_modules: tuple["PromptModule", ...] | None = None,
+    ) -> None:
+        self.role_instruction_blocks = role_instruction_blocks
+        self.stable_modules = stable_modules
 
 
 def run_agent_turn(
@@ -71,6 +88,8 @@ def run_agent_loop(
     hook_manager: HookManager | None = None,
     context_manager: ContextManager | None = None,
     agent_scope: str = "main",
+    subagent_manager: "SubagentManager | None" = None,
+    prompt_overrides: AgentPromptOverrides | None = None,
 ) -> Iterator[AgentEvent]:
     done_reason = ""
     try:
@@ -88,6 +107,8 @@ def run_agent_loop(
             hook_manager=hook_manager,
             context_manager=context_manager,
             agent_scope=agent_scope,
+            subagent_manager=subagent_manager,
+            prompt_overrides=prompt_overrides,
         ):
             if event.kind == "done":
                 done_reason = event.stop_reason
@@ -131,6 +152,8 @@ def _run_agent_loop_impl(
     hook_manager: HookManager | None = None,
     context_manager: ContextManager | None = None,
     agent_scope: str = "main",
+    subagent_manager: "SubagentManager | None" = None,
+    prompt_overrides: AgentPromptOverrides | None = None,
 ) -> Iterator[AgentEvent]:
     state.cancel_requested = False
     state.iterations = 0
@@ -183,6 +206,7 @@ def _run_agent_loop_impl(
                 "permission_mode": context.permissions.mode if context.permissions else "disabled",
             },
         )
+        lease = None
         try:
             current_provider = _provider_for_iteration(
                 provider,
@@ -193,6 +217,9 @@ def _run_agent_loop_impl(
             )
             if memory is not None:
                 memory.refresh_prompt_memory(state)
+            if agent_scope == "main" and subagent_manager is not None:
+                lease = subagent_manager.acquire_result_lease()
+            result_blocks = _subagent_result_blocks(lease.results) if lease is not None else ()
             prompt = build_agent_prompt(
                 context=context,
                 registry=registry,
@@ -201,6 +228,9 @@ def _run_agent_loop_impl(
                 iteration=iteration,
                 skill_manager=skill_manager,
                 hook_manager=hook_manager,
+                subagent_manager=subagent_manager if agent_scope == "main" else None,
+                prompt_overrides=prompt_overrides,
+                subagent_result_blocks=result_blocks,
             )
             selected_tools = select_tools(registry, options, state, skill_manager)
             preparation = context_manager.prepare_before_request(
@@ -235,6 +265,24 @@ def _run_agent_loop_impl(
                     iteration=iteration,
                     skill_manager=skill_manager,
                     hook_manager=hook_manager,
+                    subagent_manager=subagent_manager if agent_scope == "main" else None,
+                    prompt_overrides=prompt_overrides,
+                    subagent_result_blocks=result_blocks,
+                )
+            if agent_scope == "main" and subagent_manager is not None:
+                from huicode.permissions import clone_permission_context
+                from huicode.subagents.types import ParentAgentSnapshot, PermissionSnapshot
+
+                permission = clone_permission_context(context.permissions, context.workspace)
+                subagent_manager.capture_parent(
+                    ParentAgentSnapshot(
+                        messages=tuple(deepcopy(state.messages)),
+                        prompt=prompt,
+                        visible_tools=tuple(tool.name for tool in selected_tools),
+                        mode=options.mode,
+                        permissions=PermissionSnapshot(permission),
+                        project_instructions=state.memory.instructions_text,
+                    )
                 )
             try:
                 response = yield from collect_model_response(
@@ -244,12 +292,17 @@ def _run_agent_loop_impl(
                     prompt=prompt,
                     iteration=iteration,
                 )
+                if lease is not None and subagent_manager is not None:
+                    subagent_manager.ack_result_lease(lease.id)
+                    lease = None
             finally:
                 if hook_manager is not None:
                     hook_manager.consume_next_request(state.hooks)
             if response.usage:
                 context_manager.record_usage(state, response.usage, request_estimate)
         except KeyboardInterrupt:
+            if lease is not None and subagent_manager is not None:
+                subagent_manager.release_result_lease(lease.id)
             state.cancel_requested = True
             yield AgentEvent(
                 kind="done",
@@ -259,12 +312,26 @@ def _run_agent_loop_impl(
             )
             return
         except (APIError, RuntimeError, ValueError) as exc:
+            if lease is not None and subagent_manager is not None:
+                subagent_manager.release_result_lease(lease.id)
             _dispatch_agent_error(hook_manager, context, state, options, iteration, agent_scope, exc)
             yield AgentEvent(
                 kind="error",
                 iteration=iteration,
                 data={"message": f"请求错误: {exc}"},
             )
+            yield AgentEvent(
+                kind="done",
+                iteration=iteration,
+                stop_reason="error",
+                data={"message": f"请求错误: {exc}"},
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - Provider 边界需要释放结果租约
+            if lease is not None and subagent_manager is not None:
+                subagent_manager.release_result_lease(lease.id)
+            _dispatch_agent_error(hook_manager, context, state, options, iteration, agent_scope, exc)
+            yield AgentEvent(kind="error", iteration=iteration, data={"message": f"请求错误: {exc}"})
             yield AgentEvent(
                 kind="done",
                 iteration=iteration,
@@ -456,6 +523,9 @@ def build_agent_prompt(
     iteration: int,
     skill_manager: SkillManager | None = None,
     hook_manager: HookManager | None = None,
+    subagent_manager: "SubagentManager | None" = None,
+    prompt_overrides: AgentPromptOverrides | None = None,
+    subagent_result_blocks: tuple[str, ...] = (),
 ) -> PromptBundle:
     selected_tools = select_tools(registry, options, state, skill_manager)
     prompt_context = PromptContext(
@@ -480,8 +550,38 @@ def build_agent_prompt(
             hook_manager.prompt_blocks(state.hooks) if hook_manager is not None else ()
         ),
         skill_catalog=(skill_manager.catalog_items() if skill_manager is not None else ()),
+        agent_catalog=(
+            subagent_manager.catalog.catalog_items() if subagent_manager is not None else ()
+        ),
+        role_instruction_blocks=(
+            prompt_overrides.role_instruction_blocks if prompt_overrides is not None else ()
+        ),
+        subagent_result_blocks=subagent_result_blocks,
+        stable_modules_override=(
+            prompt_overrides.stable_modules if prompt_overrides is not None else None
+        ),
     )
     return build_prompt_bundle(prompt_context)
+
+
+def _subagent_result_blocks(results) -> tuple[str, ...]:  # noqa: ANN001
+    blocks = []
+    for result in results:
+        usage = html.escape(json.dumps(result.usage, ensure_ascii=False, sort_keys=True))
+        blocks.append(
+            "\n".join(
+                [
+                    f"task_id: {html.escape(result.task_id)}",
+                    f"status: {html.escape(result.status)}",
+                    f"stop_reason: {html.escape(result.stop_reason)}",
+                    f"iterations: {result.iterations}",
+                    f"usage: {usage}",
+                    f"summary: {html.escape(result.summary)}",
+                    f"error: {html.escape(result.error)}" if result.error else "",
+                ]
+            ).strip()
+        )
+    return tuple(blocks)
 
 
 def _provider_for_iteration(provider, config, model_override, factory, cache):  # noqa: ANN001, ANN202

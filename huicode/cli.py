@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
+import time
+from copy import deepcopy
 from pathlib import Path
 
-from huicode.agent import run_agent_loop
+from huicode.agent import build_agent_prompt, run_agent_loop, select_tools
 from huicode.agent_events import AgentMode, AgentOptions, AgentState
 from huicode.commands import (
     CLICommandRuntime,
@@ -29,6 +32,7 @@ from huicode.permissions import (
     PermissionContext,
     load_permission_config,
     permission_config_paths,
+    clone_permission_context,
 )
 from huicode.provider_factory import create_provider
 from huicode.providers.base import Provider
@@ -36,7 +40,16 @@ from huicode.skills.catalog import SkillCatalogBuilder, SkillConfigError
 from huicode.skills.manager import SkillManager, default_skill_roots
 from huicode.skills.runner import SkillRunner
 from huicode.skills.tool import SkillTool
-from huicode.tools.base import ToolContext
+from huicode.subagents import (
+    AgentCatalog,
+    AgentTool,
+    SubagentConfigError,
+    SubagentManager,
+    default_agent_roots,
+)
+from huicode.subagents.runner import IsolatedSubagentRunner
+from huicode.subagents.types import ParentAgentSnapshot, PermissionSnapshot
+from huicode.tools.base import FileReadCache, ToolContext
 from huicode.tools.registry import create_default_registry
 from huicode.tui import format_permission_request, render_agent_event
 
@@ -108,7 +121,11 @@ def _run_chat(
         persistent_path=permission_paths.local,
         confirmer=confirmer,
     )
-    tool_context = ToolContext(workspace=workspace, permissions=permission_context)
+    tool_context = ToolContext(
+        workspace=workspace,
+        permissions=permission_context,
+        read_cache=FileReadCache(),
+    )
     state = AgentState()
     context_manager = ContextManager(workspace, config.context)
     memory_manager: MemoryManager | None = None
@@ -134,6 +151,20 @@ def _run_chat(
         return 2
 
     try:
+        agent_catalog = AgentCatalog(
+            default_agent_roots(workspace),
+            tool_registry,
+            config.subagents,
+        )
+        agent_snapshot = agent_catalog.initialize()
+    except SubagentConfigError as exc:
+        _close_mcp(mcp_manager)
+        if memory_manager is not None:
+            memory_manager.close()
+        print(f"子 Agent 配置错误: {exc}")
+        return 2
+
+    try:
         hook_catalog = load_hook_catalog(hook_config_paths(workspace), inline_hooks=config.hooks)
         hook_manager = HookManager(hook_catalog, workspace)
     except HookConfigError as exc:
@@ -142,6 +173,24 @@ def _run_chat(
             memory_manager.close()
         print(f"Hook 配置错误: {exc}")
         return 2
+
+    subagent_runner = IsolatedSubagentRunner(
+        provider=provider,
+        registry=tool_registry,
+        context=tool_context,
+        config=config,
+        catalog=agent_catalog,
+        hook_manager=hook_manager,
+    )
+    subagent_manager = SubagentManager(
+        agent_catalog,
+        config.subagents,
+        subagent_runner,
+    )
+    tool_registry.register(AgentTool(subagent_manager), system=True)
+    hook_manager.set_subagent_submitter(
+        lambda role, task: subagent_manager.submit_defined_background(role, task).id
+    )
 
     runtime_holder = {}
 
@@ -178,6 +227,8 @@ def _run_chat(
         skill_manager=skill_manager,
         isolated_skill_runner=run_isolated_skill,
         hook_manager=hook_manager,
+        agent_catalog=agent_catalog,
+        subagent_manager=subagent_manager,
         send_user_message=lambda text, mode, show_usage: _run_request(
             provider,
             tool_registry,
@@ -191,12 +242,37 @@ def _run_chat(
             skill_manager,
             context_manager,
             hook_manager,
+            subagent_manager,
         ),
     )
     runtime_holder["runtime"] = runtime
     tool_registry.register(
         SkillTool(skill_manager, state.skills, isolated_runner=run_isolated_skill),
         system=True,
+    )
+    initial_options = AgentOptions()
+    initial_prompt = build_agent_prompt(
+        context=tool_context,
+        registry=tool_registry,
+        state=state,
+        options=initial_options,
+        iteration=1,
+        skill_manager=skill_manager,
+        hook_manager=hook_manager,
+        subagent_manager=subagent_manager,
+    )
+    initial_tools = select_tools(tool_registry, initial_options, state, skill_manager)
+    subagent_manager.capture_parent(
+        ParentAgentSnapshot(
+            messages=tuple(deepcopy(state.messages)),
+            prompt=initial_prompt,
+            visible_tools=tuple(tool.name for tool in initial_tools),
+            mode="chat",
+            permissions=PermissionSnapshot(
+                clone_permission_context(permission_context, workspace)
+            ),
+            project_instructions=state.memory.instructions_text,
+        )
     )
     prompt_session = _create_prompt_session(command_registry, runtime)
     confirmer.prompt_session = prompt_session
@@ -219,6 +295,13 @@ def _run_chat(
         ),
         state.hooks,
     )
+    notification_stop = threading.Event()
+    threading.Thread(
+        target=_subagent_notification_pump,
+        args=(subagent_manager, prompt_session, notification_stop),
+        name="huicode-subagent-notifications",
+        daemon=True,
+    ).start()
     if mcp_manager is not None and mcp_manager.server_count:
         print(
             f"MCP servers={mcp_manager.active_server_count}/{mcp_manager.server_count} "
@@ -235,6 +318,16 @@ def _run_chat(
     )
     for warning in skill_snapshot.warnings:
         print(f"Skill warning: {warning.display()}")
+    agent_sources = ",".join(
+        f"{source}={count}" for source, count in sorted(agent_snapshot.source_counts.items())
+    ) or "none"
+    print(
+        f"Agents effective={len(agent_snapshot.definitions)} "
+        f"overridden={agent_snapshot.overridden_count} skipped={agent_snapshot.skipped_count} "
+        f"sources={agent_sources}"
+    )
+    for warning in agent_snapshot.warnings:
+        print(f"Agent warning: {warning.display()}")
     hook_status = hook_manager.summary()
     hook_sources = ",".join(
         f"{source}={count}" for source, count in sorted(hook_status.source_counts.items())
@@ -260,6 +353,8 @@ def _run_chat(
                 state=state,
                 mode="plan" if runtime.get_mode() == "plan" else "chat",
                 reason="eof",
+                subagent_manager=subagent_manager,
+                notification_stop=notification_stop,
             )
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
@@ -297,6 +392,8 @@ def _run_chat(
                 state=state,
                 mode="plan" if runtime.get_mode() == "plan" else "chat",
                 reason="exit",
+                subagent_manager=subagent_manager,
+                notification_stop=notification_stop,
             )
 
 
@@ -375,7 +472,13 @@ def _close_resources_and_return(
     state: AgentState | None = None,
     mode: AgentMode = "chat",
     reason: str = "exit",
+    subagent_manager: SubagentManager | None = None,
+    notification_stop: threading.Event | None = None,
 ) -> int:
+    if notification_stop is not None:
+        notification_stop.set()
+    if subagent_manager is not None:
+        subagent_manager.close()
     if hook_manager is not None:
         hook_manager.close(
             make_event(
@@ -407,6 +510,7 @@ def _run_request(
     skill_manager: SkillManager | None = None,
     context_manager: ContextManager | None = None,
     hook_manager: HookManager | None = None,
+    subagent_manager: SubagentManager | None = None,
 ) -> None:
     options = AgentOptions(mode=mode)
     last_user_count = len(state.messages)
@@ -422,6 +526,7 @@ def _run_request(
         skill_manager=skill_manager,
         context_manager=context_manager,
         hook_manager=hook_manager,
+        subagent_manager=subagent_manager,
     ):
         if event.kind == "thinking" and not config.thinking.show:
             continue
@@ -431,3 +536,26 @@ def _run_request(
         if event.kind == "done" and event.stop_reason in {"cancelled", "error"} and len(state.messages) > last_user_count:
             if state.messages and state.messages[-1].role == "user":
                 state.messages.pop()
+
+
+def _subagent_notification_pump(
+    manager: SubagentManager,
+    prompt_session,
+    stop_event: threading.Event,
+) -> None:  # noqa: ANN001
+    while not stop_event.wait(0.1):
+        for notice in manager.drain_notifications():
+            role = notice.role or "fork"
+            message = (
+                f"\nHuiCode> 子 Agent {notice.task_id} [{notice.type}/{role}] "
+                f"{notice.status} ({notice.duration_seconds:.2f}s)\n  {notice.summary}"
+            )
+            if prompt_session is not None:
+                try:
+                    from prompt_toolkit.application import run_in_terminal
+
+                    run_in_terminal(lambda text=message: print(text))
+                    continue
+                except Exception:
+                    pass
+            print(message)

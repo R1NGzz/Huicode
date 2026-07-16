@@ -81,7 +81,7 @@ class SkillRunner:
         )
         state.skills.next_activation_order = 1
 
-        child_registry = self.registry.clone(exclude={"Skill"})
+        child_registry = self.registry.clone(exclude={"Skill", "Agent"})
         child_runner = SkillRunner(
             provider=self.provider,
             registry=child_registry,

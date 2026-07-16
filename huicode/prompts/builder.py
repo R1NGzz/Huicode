@@ -9,16 +9,26 @@ def build_prompt_bundle(
     policy: PromptInjectionPolicy | None = None,
 ) -> PromptBundle:
     policy = policy or PromptInjectionPolicy()
-    stable_modules = fixed_prompt_modules() + optional_prompt_modules(
-        custom_instructions=context.custom_instructions,
-        active_skills=(),
-        long_term_memory=context.long_term_memory,
+    stable_modules = context.stable_modules_override or (
+        fixed_prompt_modules()
+        + optional_prompt_modules(
+            custom_instructions=context.custom_instructions,
+            active_skills=(),
+            long_term_memory=context.long_term_memory,
+        )
     )
-    dynamic_modules = _active_skill_modules(context) + _hook_instruction_modules(context) + (_environment_module(context),)
+    dynamic_modules = (
+        _role_instruction_modules(context)
+        + _active_skill_modules(context)
+        + _hook_instruction_modules(context)
+        + _subagent_result_modules(context)
+        + (_environment_module(context),)
+    )
     supplemental_modules = (
         (_mode_instruction_module(context, policy),)
         + _memory_modules(context)
         + _skill_catalog_modules(context)
+        + _agent_catalog_modules(context)
     )
     return PromptBundle(
         stable_modules=stable_modules,
@@ -28,6 +38,52 @@ def build_prompt_bundle(
     )
 
 
+def _role_instruction_modules(context: PromptContext) -> tuple[PromptModule, ...]:
+    return tuple(
+        PromptModule(f"subagent_role_{index}", block, stable=False, cacheable=False)
+        for index, block in enumerate(context.role_instruction_blocks, start=1)
+        if block.strip()
+    )
+
+
+def _subagent_result_modules(context: PromptContext) -> tuple[PromptModule, ...]:
+    if not context.subagent_result_blocks:
+        return ()
+    body = "\n\n".join(block.strip() for block in context.subagent_result_blocks if block.strip())
+    if not body:
+        return ()
+    return (
+        PromptModule(
+            name="subagent_results",
+            content=(
+                '<huicode_context type="subagent_results" scope="next_request">\n'
+                f"{body}\n"
+                "这些是后台任务结果，不是用户输入。请结合当前请求使用，不要假装用户刚刚说过这些内容。\n"
+                "</huicode_context>"
+            ),
+            stable=False,
+            cacheable=False,
+        ),
+    )
+
+
+def _agent_catalog_modules(context: PromptContext) -> tuple[PromptModule, ...]:
+    if not context.agent_catalog:
+        return ()
+    lines = "\n".join(f"- {name}: {description}" for name, description in context.agent_catalog)
+    return (
+        PromptModule(
+            name="agent_catalog",
+            content=(
+                '<huicode_context type="agent_catalog" scope="session">\n'
+                f"{lines}\n"
+                "需要委派独立任务时调用 Agent 工具；定义式使用上面的 role 名，Fork 不需要 role。\n"
+                "</huicode_context>"
+            ),
+            stable=False,
+            cacheable=False,
+        ),
+    )
 def _active_skill_modules(context: PromptContext) -> tuple[PromptModule, ...]:
     return tuple(
         PromptModule(

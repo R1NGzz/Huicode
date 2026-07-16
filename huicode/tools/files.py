@@ -35,7 +35,11 @@ class ReadFileTool:
             path = safe_join_workspace(context.workspace, path_arg)
             if not path.is_file():
                 return ToolResult.failure("not_found", f"文件不存在: {path_arg}", {"path": path_arg})
-            content = path.read_text(encoding="utf-8")
+            content = context.read_cache.get(path) if context.read_cache is not None else None
+            if content is None:
+                content = path.read_text(encoding="utf-8")
+                if context.read_cache is not None:
+                    context.read_cache.put(path, content)
             lines = content.count("\n") + (1 if content else 0)
             return ToolResult.success(
                 {"path": path_arg, "content": content, "lines": lines, "chars": len(content)},

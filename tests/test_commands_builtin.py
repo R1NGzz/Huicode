@@ -83,6 +83,14 @@ class FakeRuntime:
         self.calls.append(("skill_status", arguments))
         return f"skills:{arguments}"
 
+    def agent_status(self, arguments):  # noqa: ANN001
+        self.calls.append(("agents", arguments))
+        return f"agents:{arguments}"
+
+    def task_status(self, arguments):  # noqa: ANN001
+        self.calls.append(("tasks", arguments))
+        return f"tasks:{arguments}"
+
 
 class BuiltinCommandTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -95,7 +103,7 @@ class BuiltinCommandTests(unittest.TestCase):
     def run_command(self, text: str):
         return self.dispatcher.dispatch(self.parser.parse(text), self.context)
 
-    def test_registers_ten_core_visible_commands(self) -> None:
+    def test_registers_twelve_core_visible_commands(self) -> None:
         visible = self.registry.visible_commands()
 
         self.assertEqual(
@@ -111,6 +119,8 @@ class BuiltinCommandTests(unittest.TestCase):
                 "permission",
                 "status",
                 "skill",
+                "agents",
+                "tasks",
             ],
         )
         self.assertEqual({spec.command_type for spec in visible}, {CommandType.LOCAL, CommandType.STATE})

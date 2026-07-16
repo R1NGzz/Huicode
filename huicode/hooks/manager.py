@@ -50,6 +50,9 @@ class HookManager:
         self._started = False
         self._closed = False
 
+    def set_subagent_submitter(self, submitter) -> None:  # noqa: ANN001
+        self.action_executor.set_subagent_submitter(submitter)
+
     def start_session(self, event: HookEvent, state: HookRuntimeState) -> HookDispatchResult:
         with self._lock:
             if self._started:

@@ -58,15 +58,27 @@ class ToolRegistry:
                 resolved.add(target)
         return resolved, missing
 
-    def clone(self, *, exclude: set[str] | frozenset[str] = frozenset()) -> "ToolRegistry":
+    def clone(
+        self,
+        *,
+        exclude: set[str] | frozenset[str] = frozenset(),
+        only: set[str] | frozenset[str] | None = None,
+    ) -> "ToolRegistry":
         cloned = ToolRegistry()
         excluded = {
             resolved
             for name in exclude
             if (resolved := self.resolve_name(name)) is not None
         }
+        included = None
+        if only is not None:
+            included = {
+                resolved
+                for name in only
+                if (resolved := self.resolve_name(name)) is not None
+            }
         for tool in self.list():
-            if tool.name in excluded:
+            if tool.name in excluded or (included is not None and tool.name not in included):
                 continue
             cloned.register(tool, system=tool.name in self._system_tools)
         for alias_name, target_name in self._aliases.items():

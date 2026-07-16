@@ -47,6 +47,22 @@ def create_builtin_registry() -> CommandRegistry:
                 _skill,
                 "[name]",
             ),
+            _spec(
+                "agents",
+                "查看已加载的子 Agent 角色",
+                "/agents [name]",
+                CommandType.LOCAL,
+                _agents,
+                "[name]",
+            ),
+            _spec(
+                "tasks",
+                "查看当前进程的子 Agent 任务",
+                "/tasks [task-id]",
+                CommandType.LOCAL,
+                _tasks,
+                "[task-id]",
+            ),
         )
     )
     registry.register_many(
@@ -204,6 +220,20 @@ def _skill(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
     if len(arguments.split()) > 1:
         return CommandResult(ok=False, message="用法: /skill [name]")
     return CommandResult(message=context.services.skill_status(arguments))
+
+
+def _agents(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
+    arguments = parsed.arguments.strip()
+    if len(arguments.split()) > 1:
+        return CommandResult(ok=False, message="用法: /agents [name]")
+    return CommandResult(message=context.services.agent_status(arguments))
+
+
+def _tasks(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
+    arguments = parsed.arguments.strip()
+    if len(arguments.split()) > 1:
+        return CommandResult(ok=False, message="用法: /tasks [task-id]")
+    return CommandResult(message=context.services.task_status(arguments))
 
 
 def _legacy_sessions(parsed: ParsedCommand, context: CommandContext) -> CommandResult:
