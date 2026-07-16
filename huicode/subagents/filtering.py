@@ -7,7 +7,9 @@ from .types import AgentDefinition
 from .types import SubagentTask
 
 
-GLOBAL_FORBIDDEN_TOOLS = frozenset({"Agent", "Skill"})
+GLOBAL_FORBIDDEN_TOOLS = frozenset(
+    {"Agent", "Skill", "Team", "TeamTask", "TeamMessage", "TeamPlanRequest", "TeamPlanDecision", "TeamIntegrate"}
+)
 
 
 def resolve_subagent_tool_names(

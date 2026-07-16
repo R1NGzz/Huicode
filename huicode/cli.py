@@ -8,7 +8,7 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
-from huicode.agent import build_agent_prompt, run_agent_loop, select_tools
+from huicode.agent import AgentPromptOverrides, build_agent_prompt, run_agent_loop, select_tools
 from huicode.agent_events import AgentMode, AgentOptions, AgentState
 from huicode.commands import (
     CLICommandRuntime,
@@ -24,6 +24,8 @@ from huicode.context import ContextManager
 from huicode.hooks import HookConfigError, HookManager, hook_config_paths, load_hook_catalog
 from huicode.hooks.events import make_event
 from huicode.memory.manager import MemoryManager
+from huicode.memory.codec import message_from_json, message_to_json
+from huicode.memory.recovery import recover_safe_messages
 from huicode.mcp import MCPConfigError, MCPManager, load_mcp_config, mcp_config_paths
 from huicode.mcp.transport import create_transport
 from huicode.permissions import (
@@ -51,6 +53,17 @@ from huicode.subagents.runner import IsolatedSubagentRunner
 from huicode.subagents.types import ParentAgentSnapshot, PermissionSnapshot
 from huicode.tools.base import FileReadCache, ToolContext
 from huicode.tools.registry import create_default_registry
+from huicode.teams.manager import TeamManager
+from huicode.teams.scoping import ScopedToolRegistry
+from huicode.teams.tools import register_team_tools
+from huicode.teams.types import TeamRuntimeIdentity
+from huicode.teams.storage import TeamStore, append_jsonl, read_jsonl
+from huicode.teams.mailbox import MailboxStore, NameRegistry
+from huicode.teams.tasks import SharedTaskStore
+from huicode.teams.approval import ApprovalGate
+from huicode.teams.backends import BackendHandle, MemberLaunchSpec
+from huicode.teams.member_runner import TeamMemberRunner
+from huicode.teams.tools import TeamMessageTool, TeamPlanRequestTool, TeamTaskTool
 from huicode.tui import format_permission_request, render_agent_event
 from huicode.workspaces import WorkspaceContextLoader
 from huicode.worktrees import WorktreeManager
@@ -74,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("HUICODE_CONFIG", str(Path.home() / ".huicode.yaml")),
         help="YAML 配置文件路径，默认读取 HUICODE_CONFIG 或 ~/.huicode.yaml",
     )
+    parser.add_argument("--team-worker", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--member-id", default="", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     try:
@@ -83,7 +98,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"配置错误: {exc}", file=sys.stderr)
         return 2
 
-    return _run_chat(provider, config)
+    if args.team_worker:
+        return _run_team_worker(provider, config, Path(args.team_worker), args.member_id)
+    return _run_chat(provider, config, config_path=args.config)
 
 
 def _run_chat(
@@ -91,6 +108,7 @@ def _run_chat(
     config: LLMConfig,
     mcp_transport_factory=None,
     command_registry_factory=None,
+    config_path: str = "",
 ) -> int:
     workspace = Path.cwd()
     try:
@@ -182,6 +200,88 @@ def _run_chat(
     worktree_cleanup = WorktreeCleanupService(worktree_manager)
     worktree_cleanup.start()
 
+    team_manager: TeamManager | None = None
+    team_states: dict[str, AgentState] = {}
+    team_saved_counts: dict[str, int] = {}
+
+    def execute_team_assignment(member: str, task_id: str, prompt: str, member_workspace: Path):
+        if team_manager is None:
+            return False, "Team Manager 不可用", {}
+        if member not in team_states:
+            restored = AgentState()
+            if team_manager.store is not None:
+                records, _ = read_jsonl(team_manager.store.paths.member_session(member))
+                messages = []
+                for record in records:
+                    if record.get("type") == "message" and isinstance(record.get("message"), dict):
+                        try:
+                            messages.append(message_from_json(record["message"]))
+                        except Exception:
+                            continue
+                restored.messages = recover_safe_messages(messages)[0]
+            team_states[member] = restored
+            team_saved_counts[member] = len(restored.messages)
+        member_state = team_states[member]
+        member_permission = clone_permission_context(permission_context, member_workspace)
+        member_context = ToolContext(
+            workspace=member_workspace,
+            permissions=member_permission,
+            read_cache=FileReadCache(),
+        )
+        member_registry = ScopedToolRegistry(
+            tool_registry,
+            TeamRuntimeIdentity("team_member", team_manager.team.id if team_manager.team else None, member),
+            approval_gate=team_manager.approvals,
+            task_id=task_id,
+        )
+        text_parts: list[str] = []
+        usage: dict[str, object] = {}
+        stop_reason = "error"
+        role_block = (
+            '<huicode_instruction type="team_member" priority="highest">\n'
+            f"你是团队 {team_manager.team.name if team_manager.team else ''} 的成员 {member}。\n"
+            f"当前共享任务 ID: {task_id}。只在当前独立 Worktree {member_workspace} 内工作。\n"
+            "使用 TeamTask 和 TeamMessage 与团队协作；完成后给出清晰结果。\n"
+            "</huicode_instruction>"
+        )
+        for event in run_agent_loop(
+            provider=provider,
+            registry=member_registry,
+            context=member_context,
+            state=member_state,
+            user_text=prompt,
+            config=config,
+            options=AgentOptions(max_iterations=50),
+            hook_manager=hook_manager,
+            context_manager=ContextManager(member_workspace, config.context),
+            agent_scope=f"team_member:{member}",
+            prompt_overrides=AgentPromptOverrides(role_instruction_blocks=(role_block,)),
+        ):
+            if event.kind == "text":
+                text_parts.append(event.text)
+            elif event.kind == "usage":
+                usage.update(event.data.get("usage", {}))
+            elif event.kind == "done":
+                stop_reason = event.stop_reason
+        summary = "".join(text_parts).strip() or f"成员停止: {stop_reason}"
+        if team_manager.store is not None:
+            session_path = team_manager.store.paths.member_session(member)
+            for message in member_state.messages[team_saved_counts.get(member, 0):]:
+                append_jsonl(session_path, {"type": "message", "message": message_to_json(message), "task_id": task_id})
+            team_saved_counts[member] = len(member_state.messages)
+        return stop_reason == "final", summary, usage
+
+    if config.teams.enabled:
+        team_manager = TeamManager(
+            workspace,
+            config.teams,
+            worktree_manager,
+            assignment_executor=execute_team_assignment,
+            config_path=str(Path(config_path).resolve()) if config_path else "",
+            agent_catalog=agent_catalog,
+        )
+        register_team_tools(tool_registry, team_manager)
+
     subagent_runner = IsolatedSubagentRunner(
         provider=provider,
         registry=tool_registry,
@@ -239,9 +339,10 @@ def _run_chat(
         hook_manager=hook_manager,
         agent_catalog=agent_catalog,
         subagent_manager=subagent_manager,
+        team_manager=team_manager,
         send_user_message=lambda text, mode, show_usage: _run_request(
             provider,
-            tool_registry,
+            _team_scoped_registry(tool_registry, team_manager, config),
             tool_context,
             state,
             text,
@@ -253,6 +354,7 @@ def _run_chat(
             context_manager,
             hook_manager,
             subagent_manager,
+            team_manager,
         ),
     )
     runtime_holder["runtime"] = runtime
@@ -312,6 +414,13 @@ def _run_chat(
         name="huicode-subagent-notifications",
         daemon=True,
     ).start()
+    if team_manager is not None:
+        threading.Thread(
+            target=_team_notification_pump,
+            args=(team_manager, prompt_session, notification_stop),
+            name="huicode-team-notifications",
+            daemon=True,
+        ).start()
     if mcp_manager is not None and mcp_manager.server_count:
         print(
             f"MCP servers={mcp_manager.active_server_count}/{mcp_manager.server_count} "
@@ -366,6 +475,7 @@ def _run_chat(
                 subagent_manager=subagent_manager,
                 notification_stop=notification_stop,
                 worktree_cleanup=worktree_cleanup,
+                team_manager=team_manager,
             )
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
@@ -406,6 +516,7 @@ def _run_chat(
                 subagent_manager=subagent_manager,
                 notification_stop=notification_stop,
                 worktree_cleanup=worktree_cleanup,
+                team_manager=team_manager,
             )
 
 
@@ -487,11 +598,14 @@ def _close_resources_and_return(
     subagent_manager: SubagentManager | None = None,
     notification_stop: threading.Event | None = None,
     worktree_cleanup: WorktreeCleanupService | None = None,
+    team_manager: TeamManager | None = None,
 ) -> int:
     if notification_stop is not None:
         notification_stop.set()
     if worktree_cleanup is not None:
         worktree_cleanup.close()
+    if team_manager is not None:
+        team_manager.close()
     if subagent_manager is not None:
         subagent_manager.close()
     if hook_manager is not None:
@@ -526,9 +640,21 @@ def _run_request(
     context_manager: ContextManager | None = None,
     hook_manager: HookManager | None = None,
     subagent_manager: SubagentManager | None = None,
+    team_manager: TeamManager | None = None,
 ) -> None:
     options = AgentOptions(mode=mode)
     last_user_count = len(state.messages)
+    team_block = ()
+    if team_manager is not None and team_manager.team is not None:
+        team_status = team_manager.status()
+        coordinator = config.teams.coordinator_enabled and os.environ.get("HUICODE_COORDINATOR") == "1"
+        team_block = (
+            '<huicode_instruction type="team_lead" priority="highest">\n'
+            f"你是团队 {team_status['team']} 的 Team Lead。成员和任务状态: {team_status}。\n"
+            "使用 TeamTask、TeamMessage、TeamPlanDecision 和 TeamIntegrate 组织协作。\n"
+            f"Coordinator 模式: {str(coordinator).lower()}。\n"
+            "</huicode_instruction>",
+        )
     for event in run_agent_loop(
         provider=provider,
         registry=registry,
@@ -542,6 +668,7 @@ def _run_request(
         context_manager=context_manager,
         hook_manager=hook_manager,
         subagent_manager=subagent_manager,
+        prompt_overrides=AgentPromptOverrides(role_instruction_blocks=team_block),
     ):
         if event.kind == "thinking" and not config.thinking.show:
             continue
@@ -579,3 +706,107 @@ def _subagent_notification_pump(
                 except Exception:
                     pass
             print(message)
+
+
+def _team_scoped_registry(registry, manager: TeamManager | None, config: LLMConfig):  # noqa: ANN001, ANN201
+    if manager is None:
+        return registry
+    if manager.team is None:
+        identity = TeamRuntimeIdentity("main")
+    else:
+        coordinator = config.teams.coordinator_enabled and os.environ.get("HUICODE_COORDINATOR") == "1"
+        identity = TeamRuntimeIdentity("team_lead", manager.team.id, coordinator=coordinator)
+    return ScopedToolRegistry(registry, identity)
+
+
+def _team_notification_pump(manager: TeamManager, prompt_session, stop_event: threading.Event) -> None:  # noqa: ANN001
+    while not stop_event.wait(0.1):
+        for event in manager.drain_events():
+            message = f"\nHuiCode> Team[{event.team}] {event.kind}: {event.message}"
+            if prompt_session is not None:
+                try:
+                    from prompt_toolkit.application import run_in_terminal
+                    run_in_terminal(lambda text=message: print(text))
+                    continue
+                except Exception:
+                    pass
+            print(message)
+
+
+def _run_team_worker(provider: Provider, config: LLMConfig, team_path: Path, member_id: str) -> int:
+    """独立终端成员入口；通信和状态完全通过团队目录完成。"""
+    try:
+        resolved = team_path.resolve()
+        store = TeamStore(resolved.parent, resolved.name, config.teams)
+        team = store.load_team()
+        member = next((item for item in store.load_members() if item.id == member_id), None)
+        if member is None:
+            raise ValueError(f"团队中不存在成员 ID: {member_id}")
+        workspace = Path(member.worktree_path).resolve()
+        if not workspace.exists():
+            raise ValueError(f"成员 Worktree 不存在: {workspace}")
+    except Exception as exc:
+        print(f"Team Worker 启动失败: {exc}", file=sys.stderr)
+        return 2
+
+    registry_names = NameRegistry(("lead", *(item.name for item in store.load_members())))
+    mailbox = MailboxStore(store, registry_names)
+    tasks = SharedTaskStore(store)
+    approvals = ApprovalGate(store, mailbox)
+
+    class WorkerFacade:
+        def __init__(self) -> None:
+            self.approvals = approvals
+        def _require_tasks(self): return tasks  # noqa: ANN202
+        def _require_mailbox(self): return mailbox  # noqa: ANN202
+        def send_message(self, sender, recipients, body): return mailbox.send(sender, recipients, body)  # noqa: ANN001, ANN202
+
+    facade = WorkerFacade()
+    registry = create_default_registry(workspace)
+    registry.register(TeamTaskTool(facade))  # type: ignore[arg-type]
+    registry.register(TeamMessageTool(facade))  # type: ignore[arg-type]
+    registry.register(TeamPlanRequestTool(facade))  # type: ignore[arg-type]
+    scoped = ScopedToolRegistry(registry, TeamRuntimeIdentity("team_member", team.id, member.name), approval_gate=approvals)
+    permission_paths = permission_config_paths(workspace)
+    permission_config = load_permission_config(permission_paths)
+    permission = PermissionContext(workspace=workspace, mode=permission_config.mode, rules=list(permission_config.rules), persistent_path=permission_paths.local, confirmer=ConsolePermissionConfirmer(None))
+    state = AgentState()
+    records, _ = read_jsonl(store.paths.member_session(member.name))
+    messages = []
+    for record in records:
+        if record.get("type") == "message" and isinstance(record.get("message"), dict):
+            try:
+                messages.append(message_from_json(record["message"]))
+            except Exception:
+                continue
+    state.messages = recover_safe_messages(messages)[0]
+    saved_count = len(state.messages)
+
+    def execute(member_name: str, task_id: str, prompt: str, member_workspace: Path):
+        nonlocal saved_count
+        scoped.task_id = task_id
+        text_parts: list[str] = []
+        usage: dict[str, object] = {}
+        stop_reason = "error"
+        block = (
+            '<huicode_instruction type="team_member" priority="highest">\n'
+            f"你是团队 {team.name} 的成员 {member_name}，任务 ID 为 {task_id}。\n"
+            f"只在独立 Worktree {member_workspace} 中工作，并通过 TeamTask/TeamMessage 协作。\n"
+            "</huicode_instruction>"
+        )
+        for event in run_agent_loop(provider, scoped, ToolContext(member_workspace, permissions=permission, read_cache=FileReadCache()), state, prompt, config, AgentOptions(max_iterations=50), context_manager=ContextManager(member_workspace, config.context), agent_scope=f"team_member:{member_name}", prompt_overrides=AgentPromptOverrides(role_instruction_blocks=(block,))):
+            if event.kind == "text": text_parts.append(event.text)
+            elif event.kind == "usage": usage.update(event.data.get("usage", {}))
+            elif event.kind == "done": stop_reason = event.stop_reason
+        for message in state.messages[saved_count:]:
+            append_jsonl(store.paths.member_session(member.name), {"type": "message", "message": message_to_json(message), "task_id": task_id})
+        saved_count = len(state.messages)
+        return stop_reason == "final", "".join(text_parts).strip() or f"成员停止: {stop_reason}", usage
+
+    runner = TeamMemberRunner(mailbox, tasks, execute, approval_gate=approvals, approval_required=lambda _: member.approval_required, poll_ms=config.teams.member_idle_poll_ms)
+    print(f"HuiCode Team Worker: {team.name}/{member.name} backend={member.actual_backend} worktree={workspace}")
+    try:
+        runner.run(MemberLaunchSpec(str(resolved), member.id, member.name, str(workspace)), BackendHandle(member.actual_backend, member.id))
+    except KeyboardInterrupt:
+        return 130
+    return 0

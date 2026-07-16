@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Callable
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from huicode.agent_events import AgentMode, AgentState
 from huicode.config import LLMConfig
@@ -21,6 +22,9 @@ from huicode.subagents.catalog import AgentCatalog
 from huicode.subagents.manager import SubagentManager
 from huicode.tools.base import ToolContext
 from huicode.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from huicode.teams.manager import TeamManager
 
 from .ui import CommandMode
 
@@ -47,6 +51,7 @@ class CLICommandRuntime:
         hook_manager: HookManager | None = None,
         agent_catalog: AgentCatalog | None = None,
         subagent_manager: SubagentManager | None = None,
+        team_manager: "TeamManager | None" = None,
         output: TextIO | None = None,
     ) -> None:
         self.provider = provider
@@ -63,6 +68,7 @@ class CLICommandRuntime:
         self.hook_manager = hook_manager
         self.agent_catalog = agent_catalog
         self.subagent_manager = subagent_manager
+        self.team_manager = team_manager
         self.output = output or sys.stdout
         self._send_user_message = send_user_message
         self._mode: CommandMode = "default"
@@ -344,6 +350,7 @@ class CLICommandRuntime:
             f"skills: {self._format_skill_summary()}",
             f"hooks: {self._format_hook_summary()}",
             f"subagents: {self._format_subagent_summary()}",
+            f"team: {self._format_team_summary()}",
         ]
         return "\n".join(lines)
 
@@ -352,6 +359,13 @@ class CLICommandRuntime:
             return "queued=0 running=0 ready=0 failed=0"
         status = self.subagent_manager.summary()
         return " ".join(f"{key}={status[key]}" for key in ("queued", "running", "ready", "failed"))
+
+    def _format_team_summary(self) -> str:
+        if self.team_manager is None or self.team_manager.team is None:
+            return "inactive"
+        status = self.team_manager.status()
+        coordinator = self.config.teams.coordinator_enabled and os.environ.get("HUICODE_COORDINATOR") == "1"
+        return f"name={status['team']} status={status['status']} members={len(status['members'])} coordinator={str(coordinator).lower()}"
 
     def _format_skill_summary(self) -> str:
         if self.skill_manager is None:
@@ -459,8 +473,14 @@ class CLICommandRuntime:
         return (
             f"{self.mode_label()}  tokens: {last}/{tokens['window']}  "
             f"permission: {self.permission_context.mode}  memory: {self._memory_toolbar_status()} "
-            f"skills: {len(self.state.skills.active)}  tasks: {self._task_toolbar_status()}"
+            f"skills: {len(self.state.skills.active)}  tasks: {self._task_toolbar_status()}  team: {self._team_toolbar_status()}"
         )
+
+    def _team_toolbar_status(self) -> str:
+        if self.team_manager is None or self.team_manager.team is None:
+            return "off"
+        suffix = "/coord" if self.config.teams.coordinator_enabled and os.environ.get("HUICODE_COORDINATOR") == "1" else ""
+        return f"{self.team_manager.team.name}{suffix}"
 
     def _task_toolbar_status(self) -> str:
         if self.subagent_manager is None:

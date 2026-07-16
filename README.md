@@ -1,6 +1,6 @@
 # HuiCode
 
-HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、子 Agent、生命周期 Hook、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
+HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、子 Agent、Agent Team、生命周期 Hook、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
 
 ## 能力概览
 
@@ -25,6 +25,7 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 两阶段加载的 Skill 系统与 isolated 子会话
 - 声明式生命周期 Hook、工具拦截与自动化动作
 - 定义式/Fork 式子 Agent、进程内后台任务与 Git Worktree 隔离
+- 长期 Agent Team、共享任务、成员邮箱、计划审批与安全分支集成
 
 ## 工具系统
 
@@ -363,6 +364,57 @@ worktrees:
 
 Worktree 根目录必须位于仓库内并被 Git 忽略。`copy_files` 复制本地配置，`restore_ignored` 按文件或 glob 补回运行文件，`symlink_directories` 为大型依赖建立目录链接，`hooks_path` 配置目标 Worktree 的 Git Hooks。Windows 无法创建目录链接时会明确报错，不会静默复制。已有目录只有在 `.huicode/worktree.json` 的仓库、任务和路径标识完全匹配时才会恢复；恢复检查不调用 Git。
 
+## Agent Team
+
+开启 Team 后，主 Agent 可以创建长期团队，给成员分配独立 Worktree，并通过共享任务和邮箱并行协作。团队状态保存在 `~/.huicode/teams/<team-name>/`，HuiCode 重启后可恢复；代码变更仍保存在当前仓库的成员分支中。
+
+配置示例：
+
+```yaml
+teams:
+  enabled: true
+  default_backend: auto
+  max_members: 4
+  mailbox_lock_retries: 8
+  mailbox_lock_retry_ms: 50
+  mailbox_stale_lock_seconds: 30
+  member_idle_poll_ms: 250
+  shutdown_wait_seconds: 3
+  coordinator_enabled: false
+  integration_checks:
+    - python -m unittest discover -s tests -v
+```
+
+模型通过以下工具组织团队：
+
+- `Team`：创建、恢复、查看、关闭或删除团队，启动和停止成员。
+- `TeamTask`：管理带依赖关系的共享任务并分配给成员。
+- `TeamMessage`：成员点对点消息、Lead 广播和邮箱读取。
+- `TeamPlanRequest`：需要审批的成员提交结构化计划。
+- `TeamPlanDecision`：Lead 按 request ID 批准或驳回，不解析普通聊天文本。
+- `TeamIntegrate`：在专用集成 Worktree 合并、继续冲突恢复、验证和发布。
+
+工具按运行身份隔离：普通主会话只看到 `Team` 入口；激活团队后 Lead 获得管理、审批和集成工具；成员只能使用任务、消息和计划申请；普通子 Agent 看不到 Team 工具。需要审批的成员在匹配的 `allow` 到达前看不到副作用工具，历史或伪造调用也会被程序拒绝。
+
+`default_backend: auto` 的顺序固定为 tmux、Windows Terminal、同进程协程，启动事件会显示实际后端。显式设置 `terminal` 时，如果两个终端后端都不可用会直接失败，不会静默降级。所有后端中的每个成员都强制使用独立 Worktree。
+
+Coordinator 模式需要两把锁同时开启：
+
+```yaml
+teams:
+  enabled: true
+  coordinator_enabled: true
+```
+
+```powershell
+$env:HUICODE_COORDINATOR = "1"
+python -m huicode --config .\huicode.yaml
+```
+
+Linux/macOS 使用 `export HUICODE_COORDINATOR=1`。双锁开启后，Lead 不能直接使用 Write/Edit；Bash 也被收窄为只读 Git 诊断，实际合并通过 `TeamIntegrate` 的固定流程执行。
+
+成员最终回复后进入 idle，保留会话、权限和 Worktree。后续消息会唤醒原成员并恢复 JSONL 历史，不创建同名新成员。集成先在专用分支和 Worktree 中完成；检查通过且目标分支没有漂移、用户工作区干净时才 fast-forward 发布。冲突、检查失败或目标变化都不会覆盖用户当前工作区。
+
 ## Hook 系统
 
 Hook 用 YAML 声明“事件 + 可选条件 + 动作”，适合自动格式化、固定安全拦截、外部通知和系统级上下文注入。规则按以下优先级合并，相同 `id` 由高层整体覆盖：
@@ -661,4 +713,4 @@ context:
 - `ToolSearch`
 - Skill 市场、远程分发和版本管理
 - Hook 热更新、显式优先级和 once 标记持久化
-- Worktree 自动合并、多 Agent 团队编排和后台任务跨会话恢复
+- 跨机器分布式团队、成员间逐 Token 实时通信和复杂任务依赖约束

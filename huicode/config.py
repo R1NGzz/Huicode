@@ -92,6 +92,20 @@ class WorktreeConfig:
 
 
 @dataclass(frozen=True)
+class TeamConfig:
+    enabled: bool = False
+    default_backend: str = "auto"
+    max_members: int = 4
+    mailbox_lock_retries: int = 8
+    mailbox_lock_retry_ms: int = 50
+    mailbox_stale_lock_seconds: int = 30
+    member_idle_poll_ms: int = 250
+    shutdown_wait_seconds: float = 3.0
+    coordinator_enabled: bool = False
+    integration_checks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     protocol: str
     model: str
@@ -108,6 +122,7 @@ class LLMConfig:
     hooks: list[dict[str, Any]] = field(default_factory=list)
     subagents: SubagentConfig = field(default_factory=SubagentConfig)
     worktrees: WorktreeConfig = field(default_factory=WorktreeConfig)
+    teams: TeamConfig = field(default_factory=TeamConfig)
 
 
 class ConfigError(ValueError):
@@ -171,6 +186,14 @@ def load_config(path: str | Path) -> LLMConfig:
         worktrees_raw = {}
     if not isinstance(worktrees_raw, dict):
         raise ConfigError("配置字段 worktrees 必须是 YAML 映射")
+    teams_raw = values.get("teams", {})
+    if teams_raw is None:
+        teams_raw = {}
+    if not isinstance(teams_raw, dict):
+        raise ConfigError("配置字段 teams 必须是 YAML 映射")
+    team_backend = str(teams_raw.get("default_backend", "auto")).strip().lower()
+    if team_backend not in {"auto", "terminal", "coroutine"}:
+        raise ConfigError("配置字段 teams.default_backend 只支持 auto、terminal 或 coroutine")
     model_aliases_raw = subagents_raw.get("model_aliases", {})
     if model_aliases_raw is None:
         model_aliases_raw = {}
@@ -300,6 +323,39 @@ def load_config(path: str | Path) -> LLMConfig:
             hooks_path=_as_optional_relative_path_string(
                 worktrees_raw.get("hooks_path"),
                 "worktrees.hooks_path",
+            ),
+        ),
+        teams=TeamConfig(
+            enabled=_as_bool(teams_raw.get("enabled", False), "teams.enabled"),
+            default_backend=team_backend,
+            max_members=_as_int(teams_raw.get("max_members", 4), "teams.max_members"),
+            mailbox_lock_retries=_as_int(
+                teams_raw.get("mailbox_lock_retries", 8),
+                "teams.mailbox_lock_retries",
+            ),
+            mailbox_lock_retry_ms=_as_int(
+                teams_raw.get("mailbox_lock_retry_ms", 50),
+                "teams.mailbox_lock_retry_ms",
+            ),
+            mailbox_stale_lock_seconds=_as_int(
+                teams_raw.get("mailbox_stale_lock_seconds", 30),
+                "teams.mailbox_stale_lock_seconds",
+            ),
+            member_idle_poll_ms=_as_int(
+                teams_raw.get("member_idle_poll_ms", 250),
+                "teams.member_idle_poll_ms",
+            ),
+            shutdown_wait_seconds=_as_positive_float(
+                teams_raw.get("shutdown_wait_seconds", 3),
+                "teams.shutdown_wait_seconds",
+            ),
+            coordinator_enabled=_as_bool(
+                teams_raw.get("coordinator_enabled", False),
+                "teams.coordinator_enabled",
+            ),
+            integration_checks=_as_string_tuple(
+                teams_raw.get("integration_checks", []),
+                "teams.integration_checks",
             ),
         ),
         max_tokens=_as_int(values.get("max_tokens", 2048), "max_tokens"),
