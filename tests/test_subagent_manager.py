@@ -88,6 +88,28 @@ class SubagentManagerTests(unittest.TestCase):
             self.assertNotIn("secret", str(lease.results[0].usage))
             manager.close()
 
+    def test_background_notification_keeps_useful_completed_result(self) -> None:
+        summary = "result-" * 80
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            catalog = AgentCatalog(
+                {name: () for name in ("plugin", "builtin", "user", "project")},
+                create_default_registry(base),
+                SubagentConfig(),
+            )
+            catalog.initialize()
+            manager = SubagentManager(
+                catalog,
+                SubagentConfig(),
+                lambda request, task: SubagentResult(task.id, "completed", summary, "final"),
+            )
+            task = manager.submit(SubagentLaunchRequest("fork", "work", None, True, _parent(base)))
+            self.assertTrue(_wait(lambda: manager.task_detail(task.id).status == "completed"))
+            notices = manager.drain_notifications()
+            self.assertEqual(summary, notices[0].summary)
+            self.assertNotIn("[truncated]", notices[0].summary)
+            manager.close()
+
     def test_worker_limit_queues_extra_task(self) -> None:
         gate = threading.Event()
         started = threading.Event()

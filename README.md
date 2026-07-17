@@ -372,6 +372,8 @@ Worktree 根目录必须位于仓库内并被 Git 忽略。`copy_files` 复制�
 
 团队激活后，Team Lead 的普通 `Agent` 工具会被执行层隐藏，防止临时子 Agent 绕过团队 roster、邮箱和强制 Worktree。Lead 应先用 `Team(action="spawn")` 创建成员，再创建共享任务并用 `TeamTask(action="assign")` 派发。
 
+Team 工具作用域按当前 Manager 状态动态计算：即使在同一轮 Agent Loop 中先 `resume` 团队，下一次模型请求也会立即切换为 Lead 工具集。后台通知通过 prompt_toolkit 事件循环线程安全输出；子 Agent 完成结果最多显示 4000 字符，超出时可用 `/tasks <task-id>` 查看完整结果。
+
 配置示例：
 
 ```yaml

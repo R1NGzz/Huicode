@@ -288,7 +288,7 @@ class SubagentManager:
                         role=task.role,
                         status=task.status,
                         duration_seconds=completed.duration_seconds,
-                        summary=_clip(task.summary or task.error, 160),
+                        summary=completed.summary,
                         worktree_path=task.worktree_path,
                         worktree_branch=task.worktree_branch,
                         worktree_state=task.worktree_state,

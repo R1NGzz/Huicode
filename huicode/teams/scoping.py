@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from huicode.tools.base import ToolContext, ToolResult
 from huicode.tools.registry import ToolRegistry
@@ -39,13 +39,17 @@ class CoordinatorGitTool:
 
 
 class ScopedToolRegistry:
-    def __init__(self, registry: ToolRegistry, identity: TeamRuntimeIdentity, *, approval_gate: ApprovalGate | None = None, task_id: str = "", allowed_tools: tuple[str, ...] | list[str] | None = None, denied_tools: tuple[str, ...] | list[str] = ()) -> None:
+    def __init__(self, registry: ToolRegistry, identity: TeamRuntimeIdentity | Callable[[], TeamRuntimeIdentity], *, approval_gate: ApprovalGate | None = None, task_id: str = "", allowed_tools: tuple[str, ...] | list[str] | None = None, denied_tools: tuple[str, ...] | list[str] = ()) -> None:
         self.registry = registry
-        self.identity = identity
+        self._identity = identity
         self.approval_gate = approval_gate
         self.task_id = task_id
         self.allowed_tools = None if allowed_tools is None else tuple(allowed_tools)
         self.denied_tools = tuple(denied_tools)
+
+    @property
+    def identity(self) -> TeamRuntimeIdentity:
+        return self._identity() if callable(self._identity) else self._identity
 
     def _visible(self) -> set[str]:
         names = {tool.name for tool in self.registry.list()}

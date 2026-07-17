@@ -68,6 +68,19 @@ class TeamScopingTests(unittest.TestCase):
         self.assertIn("TeamTask", names)
         self.assertIn("TeamMessage", names)
 
+    def test_identity_changes_take_effect_in_same_registry(self):
+        active = False
+
+        def identity():
+            return TeamRuntimeIdentity("team_lead", "t") if active else TeamRuntimeIdentity("main")
+
+        scoped = ScopedToolRegistry(self.make_registry(), identity)
+        self.assertIsNotNone(scoped.get("Agent"))
+        self.assertIsNone(scoped.get("TeamTask"))
+        active = True
+        self.assertIsNone(scoped.get("Agent"))
+        self.assertIsNotNone(scoped.get("TeamTask"))
+
 
 if __name__ == "__main__":
     unittest.main()

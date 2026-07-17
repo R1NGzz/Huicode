@@ -6,8 +6,8 @@ Agent Team 章节实现通过验收。团队持久化、成员后端、独立 Wo
 
 ## 自动化证据
 
-- Agent Team 专项测试：23 项通过。
-- 全量回归测试：401 项通过。
+- Agent Team 专项测试：24 项通过。
+- 全量回归测试：403 项通过。
 - Python 编译检查：`python -m compileall huicode tests` 通过。
 - 补丁格式检查：`git diff --check` 通过，仅有 Git 的 CRLF 转换提示。
 - 审批并发压力测试：同一场景连续执行 10 次，全部通过。
@@ -15,6 +15,7 @@ Agent Team 章节实现通过验收。团队持久化、成员后端、独立 Wo
 - 用户实际 `huicode.yaml` 启动验证：配置解析得到 `teams.enabled=true`，启动横幅显示 `Team enabled backend=auto`，主作用域向 Provider 暴露 `Team` 入口。
 - 动态角色验证：同一进程即时加载项目级 `alice`/`bob` 定义；自由角色可以直接 spawn，定义式角色会固化配置且成功成员返回独立 Worktree 路径和分支。
 - Team Lead 通道验证：团队激活后 Provider 工具列表移除普通 `Agent`，强制经 Team roster、共享任务和独立 Worktree 派活。
+- 同轮状态切换验证：同一 ScopedToolRegistry 在 `main -> team_lead` 身份变化后立即移除 Agent 并开放 Lead 工具；后台通知不再产生未等待协程，结果可通过 `/tasks` 完整查询。
 
 ## 验收标准
 
@@ -32,7 +33,7 @@ Agent Team 章节实现通过验收。团队持久化、成员后端、独立 Wo
 | AC10 安全集成 | 通过 | 真实 Git 仓库合并、冲突状态、漂移检测和快速前进发布测试 |
 | AC11 Coordinator 双重开关 | 通过 | 配置与环境变量组合测试，写工具剥离及 Bash Git 策略测试 |
 | AC12 停止与删除保护 | 通过 | 定向停止、活动成员及未集成变更保护测试 |
-| AC13 回归验证 | 通过 | 401 项全量测试通过，旧配置默认关闭 Team 能力，实际交付配置显式开启 |
+| AC13 回归验证 | 通过 | 403 项全量测试通过，旧配置默认关闭 Team 能力，实际交付配置显式开启 |
 
 ## 环境说明
 

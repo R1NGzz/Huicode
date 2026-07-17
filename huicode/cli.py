@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import sys
 import threading
@@ -723,26 +724,22 @@ def _subagent_notification_pump(
                     f"\n  worktree: {notice.worktree_state} "
                     f"{notice.worktree_branch} {notice.worktree_path}"
                 )
-            if prompt_session is not None:
-                try:
-                    from prompt_toolkit.application import run_in_terminal
-
-                    run_in_terminal(lambda text=message: print(text))
-                    continue
-                except Exception:
-                    pass
-            print(message)
+            if "[truncated]" in notice.summary:
+                message += f"\n  通知显示已截断；使用 /tasks {notice.task_id} 查看完整结果。"
+            _print_background_message(prompt_session, message)
 
 
 def _team_scoped_registry(registry, manager: TeamManager | None, config: LLMConfig):  # noqa: ANN001, ANN201
     if manager is None:
         return registry
-    if manager.team is None:
-        identity = TeamRuntimeIdentity("main")
-    else:
+
+    def current_identity() -> TeamRuntimeIdentity:
+        if manager.team is None:
+            return TeamRuntimeIdentity("main")
         coordinator = config.teams.coordinator_enabled and os.environ.get("HUICODE_COORDINATOR") == "1"
-        identity = TeamRuntimeIdentity("team_lead", manager.team.id, coordinator=coordinator)
-    return ScopedToolRegistry(registry, identity)
+        return TeamRuntimeIdentity("team_lead", manager.team.id, coordinator=coordinator)
+
+    return ScopedToolRegistry(registry, current_identity)
 
 
 def _team_notification_pump(manager: TeamManager, prompt_session, stop_event: threading.Event) -> None:  # noqa: ANN001
@@ -755,14 +752,32 @@ def _team_notification_pump(manager: TeamManager, prompt_session, stop_event: th
                 message += f"\n  worktree: {worktree}"
                 if branch:
                     message += f"\n  branch: {branch}"
-            if prompt_session is not None:
-                try:
-                    from prompt_toolkit.application import run_in_terminal
-                    run_in_terminal(lambda text=message: print(text))
-                    continue
-                except Exception:
-                    pass
-            print(message)
+            _print_background_message(prompt_session, message)
+
+
+def _print_background_message(prompt_session, message: str) -> None:  # noqa: ANN001
+    if prompt_session is not None:
+        coroutine = None
+        try:
+            loop = prompt_session.app.loop
+            if loop is not None and loop.is_running():
+                from prompt_toolkit.application import run_in_terminal
+
+                coroutine = run_in_terminal(lambda text=message: print(text))
+                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+                future.add_done_callback(_consume_background_future)
+                return
+        except Exception:
+            if coroutine is not None:
+                coroutine.close()
+    print(message)
+
+
+def _consume_background_future(future) -> None:  # noqa: ANN001
+    try:
+        future.result()
+    except Exception:
+        pass
 
 
 def _run_team_worker(provider: Provider, config: LLMConfig, team_path: Path, member_id: str) -> int:

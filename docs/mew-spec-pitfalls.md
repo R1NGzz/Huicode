@@ -971,6 +971,26 @@ Agent Team 模块、工具注册和作用域测试都已通过，但用户按原
 - 当两个工具能完成相似任务但语义不同，不能只靠提示词引导，模式激活后要在作用域层消除歧义。
 - 状态栏模式标记必须与本轮实际执行通道分开验收，不能把“能力已激活”当成“任务已使用该能力”。
 
+## 踩坑 40：同一轮恢复 Team 后工具作用域仍停在旧快照，后台通知还误用异步 API
+
+现象：
+模型在同一轮中先 `Team resume`，随后仍能调用普通 `Agent`；后台完成时出现 `coroutine ... was never awaited`。完成结果末尾自动出现 `[truncated]`，用户误以为任务被系统中断。
+
+根因：
+- `_team_scoped_registry` 在一轮开始时固化 `main` 身份，Team 状态改变后没有重新计算可见工具。
+- 后台线程直接调用 prompt_toolkit 的异步 `run_in_terminal()`，既没有 await，也没有提交到 Application 的事件循环。
+- 通知队列把完整结果二次裁成 160 字符，且没有告诉用户 `/tasks <id>` 可以读取完整结果。
+
+后来补救：
+- ScopedToolRegistry 接受动态身份提供器，每次解析和序列化工具时读取最新 Team 状态。
+- 后台通知使用 `asyncio.run_coroutine_threadsafe` 投递到 prompt_toolkit 运行循环；非交互环境安全回退普通输出。
+- 通知保留最多 4000 字符，仍超限时明确提示 `/tasks <task-id>`；任务状态 `completed` 与显示截断分开表达。
+
+以后写 spec 要补：
+- Agent Loop 内会改变模式或权限的工具，必须验收“同一轮下一次 LLM 请求”立即看到新状态，不能只测下一轮用户输入。
+- 从工作线程调用 TUI 框架前，要区分普通函数、协程和线程安全调度入口，并把 RuntimeWarning 纳入失败条件。
+- 后台结果的持久化长度、通知长度和完整结果查询入口要分别定义，截断必须提供恢复路径。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：
