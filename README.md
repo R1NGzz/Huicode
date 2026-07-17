@@ -368,6 +368,8 @@ Worktree 根目录必须位于仓库内并被 Git 忽略。`copy_files` 复制�
 
 开启 Team 后，主 Agent 可以创建长期团队，给成员分配独立 Worktree，并通过共享任务和邮箱并行协作。团队状态保存在 `~/.huicode/teams/<team-name>/`，HuiCode 重启后可恢复；代码变更仍保存在当前仓库的成员分支中。
 
+`Team(action="spawn")` 的 `name` 是成员名，`role` 是角色标签。角色可以直接使用任意合法名称；若它与当前 Agent Catalog 中的角色同名，成员会继承该 Markdown 定义的系统指令、工具白黑名单、模型、最大轮次和权限模式。项目角色目录会在每次顶层输入及 spawn 前刷新，无需重启。无论角色定义里的 `isolation` 如何设置，Team 成员都强制使用各自独立的 Worktree；spawn 在角色处理或后端启动前失败时不会产生可用成员记录。
+
 配置示例：
 
 ```yaml

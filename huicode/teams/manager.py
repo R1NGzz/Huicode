@@ -88,8 +88,27 @@ class TeamManager:
         store = self._require_store()
         team = self._require_team()
         safe = validate_name(name, "成员名")
-        if self.agent_catalog is not None and self.agent_catalog.get(role) is None:
-            raise TeamError("unknown_role", f"未知子 Agent 角色: {role}")
+        normalized_role = role.strip().lower()
+        if not normalized_role:
+            raise TeamError("invalid_role", "成员角色不能为空")
+        role_profile: dict[str, object] = {}
+        if self.agent_catalog is not None:
+            try:
+                self.agent_catalog.initialize()
+            except Exception as exc:  # noqa: BLE001
+                self._event("role_catalog_warning", f"Agent 角色目录刷新失败，成员将使用通用角色: {exc}", member=safe)
+            definition = self.agent_catalog.get(normalized_role)
+            if definition is not None:
+                role_profile = {
+                    "name": definition.name,
+                    "instructions": definition.instructions,
+                    "allowed_tools": list(definition.allowed_tools),
+                    "denied_tools": list(definition.denied_tools),
+                    "model": definition.model,
+                    "max_iterations": definition.max_iterations,
+                    "permission_mode": definition.permission_mode,
+                    "source_path": str(definition.source_path),
+                }
         members = list(store.load_members())
         if any(item.name == safe for item in members):
             raise TeamError("duplicate_member", f"成员名已存在: {safe}")
@@ -100,7 +119,7 @@ class TeamManager:
         requested = backend or self.config.default_backend
         selected = self.selector.select(requested)
         now = _now()
-        provisional = TeamMemberRecord(member_id, safe, role, requested, selected.kind, approval_required, "starting", worktree.handle.identity.task_id, str(worktree.path), worktree.branch, str(store.paths.member_session(safe)), {}, {}, now)
+        provisional = TeamMemberRecord(member_id, safe, normalized_role, requested, selected.kind, approval_required, "starting", worktree.handle.identity.task_id, str(worktree.path), worktree.branch, str(store.paths.member_session(safe)), {}, {}, now, role_profile)
         members.append(provisional)
         store.save_members(members)
         if self.registry is None:

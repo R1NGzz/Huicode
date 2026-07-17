@@ -47,6 +47,7 @@ class TeamMemberRecord:
     backend_handle: dict[str, str] = field(default_factory=dict)
     usage: dict[str, object] = field(default_factory=dict)
     updated_at: str = ""
+    role_profile: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

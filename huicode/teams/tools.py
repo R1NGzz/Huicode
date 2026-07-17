@@ -26,8 +26,8 @@ class _TeamTool:
 
 class TeamTool(_TeamTool):
     name = "Team"
-    description = "创建、恢复、查看团队并管理长期成员。"
-    parameters = {"type": "object", "properties": {"action": {"type": "string", "enum": ["create", "resume", "list", "status", "spawn", "stop", "close", "delete"]}, "name": {"type": "string"}, "role": {"type": "string"}, "backend": {"type": "string", "enum": ["auto", "terminal", "coroutine"]}, "approval_required": {"type": "boolean"}}, "required": ["action"], "additionalProperties": False}
+    description = "创建、恢复、查看团队并管理长期成员；spawn 成功时会强制创建并返回成员独立 Worktree。"
+    parameters = {"type": "object", "properties": {"action": {"type": "string", "enum": ["create", "resume", "list", "status", "spawn", "stop", "close", "delete"]}, "name": {"type": "string", "description": "团队名或成员名，取决于 action"}, "role": {"type": "string", "description": "成员角色标签；可使用自由角色。若与已加载 Agent 角色同名，则继承其指令、工具、模型、轮次和权限设置"}, "backend": {"type": "string", "enum": ["auto", "terminal", "coroutine"]}, "approval_required": {"type": "boolean"}}, "required": ["action"], "additionalProperties": False}
     def run(self, args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context
         action = args.get("action")

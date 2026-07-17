@@ -39,11 +39,13 @@ class CoordinatorGitTool:
 
 
 class ScopedToolRegistry:
-    def __init__(self, registry: ToolRegistry, identity: TeamRuntimeIdentity, *, approval_gate: ApprovalGate | None = None, task_id: str = "") -> None:
+    def __init__(self, registry: ToolRegistry, identity: TeamRuntimeIdentity, *, approval_gate: ApprovalGate | None = None, task_id: str = "", allowed_tools: tuple[str, ...] | list[str] | None = None, denied_tools: tuple[str, ...] | list[str] = ()) -> None:
         self.registry = registry
         self.identity = identity
         self.approval_gate = approval_gate
         self.task_id = task_id
+        self.allowed_tools = None if allowed_tools is None else tuple(allowed_tools)
+        self.denied_tools = tuple(denied_tools)
 
     def _visible(self) -> set[str]:
         names = {tool.name for tool in self.registry.list()}
@@ -60,6 +62,12 @@ class ScopedToolRegistry:
                 names = {name for name in names if not self.registry.is_side_effect(name) or name in MEMBER_TOOLS}
         else:
             names.difference_update(TEAM_TOOL_NAMES)
+        if self.identity.scope == "team_member" and self.allowed_tools is not None:
+            allowed, _ = self.registry.normalize_names(set(self.allowed_tools))
+            names.intersection_update(allowed | MEMBER_TOOLS)
+        if self.identity.scope == "team_member" and self.denied_tools:
+            denied, _ = self.registry.normalize_names(set(self.denied_tools))
+            names.difference_update(denied - MEMBER_TOOLS)
         if self.identity.coordinator:
             names.difference_update({"Write", "Edit"})
         return names

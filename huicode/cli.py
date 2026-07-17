@@ -36,7 +36,7 @@ from huicode.permissions import (
     permission_config_paths,
     clone_permission_context,
 )
-from huicode.provider_factory import create_provider
+from huicode.provider_factory import create_provider, create_provider_with_model
 from huicode.providers.base import Provider
 from huicode.skills.catalog import SkillCatalogBuilder, SkillConfigError
 from huicode.skills.manager import SkillManager, default_skill_roots
@@ -222,7 +222,14 @@ def _run_chat(
             team_states[member] = restored
             team_saved_counts[member] = len(restored.messages)
         member_state = team_states[member]
-        member_permission = clone_permission_context(permission_context, member_workspace)
+        member_record = next((item for item in team_manager.members() if item.name == member), None)
+        role_profile = member_record.role_profile if member_record is not None else {}
+        requested_mode = role_profile.get("permission_mode")
+        member_permission = clone_permission_context(
+            permission_context,
+            member_workspace,
+            requested_mode=requested_mode if requested_mode in {"strict", "default", "permissive"} else None,
+        )
         member_context = ToolContext(
             workspace=member_workspace,
             permissions=member_permission,
@@ -233,6 +240,8 @@ def _run_chat(
             TeamRuntimeIdentity("team_member", team_manager.team.id if team_manager.team else None, member),
             approval_gate=team_manager.approvals,
             task_id=task_id,
+            allowed_tools=role_profile.get("allowed_tools") if isinstance(role_profile.get("allowed_tools"), list) else None,
+            denied_tools=role_profile.get("denied_tools") if isinstance(role_profile.get("denied_tools"), list) else (),
         )
         text_parts: list[str] = []
         usage: dict[str, object] = {}
@@ -240,18 +249,27 @@ def _run_chat(
         role_block = (
             '<huicode_instruction type="team_member" priority="highest">\n'
             f"你是团队 {team_manager.team.name if team_manager.team else ''} 的成员 {member}。\n"
+            f"你的角色是 {member_record.role if member_record is not None else 'general'}。\n"
             f"当前共享任务 ID: {task_id}。只在当前独立 Worktree {member_workspace} 内工作。\n"
+            f"{role_profile.get('instructions', '')}\n"
             "使用 TeamTask 和 TeamMessage 与团队协作；完成后给出清晰结果。\n"
             "</huicode_instruction>"
         )
+        member_provider = provider
+        model_alias = role_profile.get("model")
+        if isinstance(model_alias, str) and model_alias != "inherit":
+            member_provider = create_provider_with_model(config, config.subagents.model_aliases[model_alias])
+        max_iterations = role_profile.get("max_iterations", 50)
+        if not isinstance(max_iterations, int):
+            max_iterations = 50
         for event in run_agent_loop(
-            provider=provider,
+            provider=member_provider,
             registry=member_registry,
             context=member_context,
             state=member_state,
             user_text=prompt,
             config=config,
-            options=AgentOptions(max_iterations=50),
+            options=AgentOptions(max_iterations=max_iterations),
             hook_manager=hook_manager,
             context_manager=ContextManager(member_workspace, config.context),
             agent_scope=f"team_member:{member}",
@@ -482,6 +500,11 @@ def _run_chat(
         except KeyboardInterrupt:
             print("\n已中断输入。输入 /exit 可退出。")
             continue
+
+        try:
+            agent_catalog.initialize()
+        except SubagentConfigError as exc:
+            print(f"Agent 角色热更新失败，继续使用上一有效版本: {exc}")
 
         if skill_manager.reload_if_changed(state.skills):
             try:
@@ -725,6 +748,12 @@ def _team_notification_pump(manager: TeamManager, prompt_session, stop_event: th
     while not stop_event.wait(0.1):
         for event in manager.drain_events():
             message = f"\nHuiCode> Team[{event.team}] {event.kind}: {event.message}"
+            worktree = event.data.get("worktree")
+            branch = event.data.get("branch")
+            if worktree:
+                message += f"\n  worktree: {worktree}"
+                if branch:
+                    message += f"\n  branch: {branch}"
             if prompt_session is not None:
                 try:
                     from prompt_toolkit.application import run_in_terminal
@@ -768,10 +797,23 @@ def _run_team_worker(provider: Provider, config: LLMConfig, team_path: Path, mem
     registry.register(TeamTaskTool(facade))  # type: ignore[arg-type]
     registry.register(TeamMessageTool(facade))  # type: ignore[arg-type]
     registry.register(TeamPlanRequestTool(facade))  # type: ignore[arg-type]
-    scoped = ScopedToolRegistry(registry, TeamRuntimeIdentity("team_member", team.id, member.name), approval_gate=approvals)
+    role_profile = member.role_profile
+    scoped = ScopedToolRegistry(
+        registry,
+        TeamRuntimeIdentity("team_member", team.id, member.name),
+        approval_gate=approvals,
+        allowed_tools=role_profile.get("allowed_tools") if isinstance(role_profile.get("allowed_tools"), list) else None,
+        denied_tools=role_profile.get("denied_tools") if isinstance(role_profile.get("denied_tools"), list) else (),
+    )
     permission_paths = permission_config_paths(workspace)
     permission_config = load_permission_config(permission_paths)
-    permission = PermissionContext(workspace=workspace, mode=permission_config.mode, rules=list(permission_config.rules), persistent_path=permission_paths.local, confirmer=ConsolePermissionConfirmer(None))
+    base_permission = PermissionContext(workspace=workspace, mode=permission_config.mode, rules=list(permission_config.rules), persistent_path=permission_paths.local, confirmer=ConsolePermissionConfirmer(None))
+    requested_mode = role_profile.get("permission_mode")
+    permission = clone_permission_context(
+        base_permission,
+        workspace,
+        requested_mode=requested_mode if requested_mode in {"strict", "default", "permissive"} else None,
+    )
     state = AgentState()
     records, _ = read_jsonl(store.paths.member_session(member.name))
     messages = []
@@ -793,10 +835,19 @@ def _run_team_worker(provider: Provider, config: LLMConfig, team_path: Path, mem
         block = (
             '<huicode_instruction type="team_member" priority="highest">\n'
             f"你是团队 {team.name} 的成员 {member_name}，任务 ID 为 {task_id}。\n"
+            f"你的角色是 {member.role}。\n"
             f"只在独立 Worktree {member_workspace} 中工作，并通过 TeamTask/TeamMessage 协作。\n"
+            f"{role_profile.get('instructions', '')}\n"
             "</huicode_instruction>"
         )
-        for event in run_agent_loop(provider, scoped, ToolContext(member_workspace, permissions=permission, read_cache=FileReadCache()), state, prompt, config, AgentOptions(max_iterations=50), context_manager=ContextManager(member_workspace, config.context), agent_scope=f"team_member:{member_name}", prompt_overrides=AgentPromptOverrides(role_instruction_blocks=(block,))):
+        member_provider = provider
+        model_alias = role_profile.get("model")
+        if isinstance(model_alias, str) and model_alias != "inherit":
+            member_provider = create_provider_with_model(config, config.subagents.model_aliases[model_alias])
+        max_iterations = role_profile.get("max_iterations", 50)
+        if not isinstance(max_iterations, int):
+            max_iterations = 50
+        for event in run_agent_loop(member_provider, scoped, ToolContext(member_workspace, permissions=permission, read_cache=FileReadCache()), state, prompt, config, AgentOptions(max_iterations=max_iterations), context_manager=ContextManager(member_workspace, config.context), agent_scope=f"team_member:{member_name}", prompt_overrides=AgentPromptOverrides(role_instruction_blocks=(block,))):
             if event.kind == "text": text_parts.append(event.text)
             elif event.kind == "usage": usage.update(event.data.get("usage", {}))
             elif event.kind == "done": stop_reason = event.stop_reason

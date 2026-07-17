@@ -2,6 +2,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from huicode.config import TeamConfig
 from huicode.teams.manager import TeamManager
@@ -69,6 +70,70 @@ class TeamManagerTests(unittest.TestCase):
             kinds = {event.kind for event in manager.drain_events()}
             self.assertIn("member_waiting_approval", kinds)
             self.assertIn("member_idle", kinds)
+            manager.close()
+
+    def test_spawn_allows_free_role_and_creates_worktree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = TeamManager(
+                Path.cwd(),
+                TeamConfig(enabled=True, default_backend="coroutine"),
+                FakeWorktreeManager(root / "worktrees"),
+                root=root / "teams",
+            )
+            manager.create("demo")
+            member = manager.spawn_member("alice", "new-role")
+            self.assertEqual("new-role", member.role)
+            self.assertTrue(Path(member.worktree_path).is_dir())
+            self.assertTrue(member.branch)
+            manager.close()
+
+    def test_spawn_refreshes_and_snapshots_defined_role(self):
+        class Catalog:
+            def __init__(self): self.refreshes = 0
+            def initialize(self): self.refreshes += 1
+            def get(self, name):
+                if name != "alice": return None
+                return SimpleNamespace(
+                    name="alice", instructions="只修改 A", allowed_tools=("Read", "Edit"),
+                    denied_tools=("Bash",), model="inherit", max_iterations=12,
+                    permission_mode="strict", source_path=Path("Alice.md"),
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            catalog = Catalog()
+            manager = TeamManager(
+                Path.cwd(), TeamConfig(enabled=True, default_backend="coroutine"),
+                FakeWorktreeManager(root / "worktrees"), root=root / "teams",
+                agent_catalog=catalog,
+            )
+            manager.create("demo")
+            member = manager.spawn_member("Alice", "Alice")
+            self.assertEqual(1, catalog.refreshes)
+            self.assertEqual("只修改 A", member.role_profile["instructions"])
+            self.assertEqual(["Read", "Edit"], member.role_profile["allowed_tools"])
+            self.assertEqual(12, member.role_profile["max_iterations"])
+            self.assertTrue(Path(member.worktree_path).is_dir())
+            manager.close()
+
+    def test_broken_catalog_falls_back_to_free_role(self):
+        class BrokenCatalog:
+            def initialize(self): raise ValueError("bad role file")
+            def get(self, name): return None
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = TeamManager(
+                Path.cwd(), TeamConfig(enabled=True, default_backend="coroutine"),
+                FakeWorktreeManager(root / "worktrees"), root=root / "teams",
+                agent_catalog=BrokenCatalog(),
+            )
+            manager.create("demo")
+            member = manager.spawn_member("alice", "unregistered")
+            self.assertTrue(Path(member.worktree_path).is_dir())
+            self.assertEqual({}, member.role_profile)
+            self.assertIn("role_catalog_warning", {event.kind for event in manager.drain_events()})
             manager.close()
 
 

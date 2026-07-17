@@ -54,6 +54,20 @@ class TeamScopingTests(unittest.TestCase):
         self.assertIn("Team", names)
         self.assertNotIn("TeamTask", names)
 
+    def test_member_role_whitelist_keeps_collaboration_tools(self):
+        scoped = ScopedToolRegistry(
+            self.make_registry(),
+            TeamRuntimeIdentity("team_member", "t", "alice"),
+            allowed_tools=("Read",),
+            denied_tools=("Bash",),
+        )
+        names = {item.name for item in scoped.list()}
+        self.assertIn("Read", names)
+        self.assertNotIn("Write", names)
+        self.assertNotIn("Bash", names)
+        self.assertIn("TeamTask", names)
+        self.assertIn("TeamMessage", names)
+
 
 if __name__ == "__main__":
     unittest.main()
