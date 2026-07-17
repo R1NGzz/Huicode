@@ -160,6 +160,8 @@ def _risk_for_call(call: ToolCall, tool, context: ToolContext) -> str:
 def _risk_for_tool(tool) -> str:
     if tool is None:
         return "high"
+    if getattr(tool, "permission_exempt", False):
+        return "low"
     if getattr(tool, "side_effect", True):
         return "medium"
     return "low"

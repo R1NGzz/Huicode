@@ -6,6 +6,10 @@ from huicode.teams.types import TeamRuntimeIdentity
 from huicode.tools.base import ToolResult
 from huicode.tools.registry import ToolRegistry
 from huicode.tools.registry import create_default_registry
+from huicode.permissions import PermissionContext
+from huicode.permissions.engine import evaluate_permission
+from huicode.providers.base import ToolCall
+from huicode.tools.base import ToolContext
 from pathlib import Path
 
 
@@ -80,6 +84,22 @@ class TeamScopingTests(unittest.TestCase):
         active = True
         self.assertIsNone(scoped.get("Agent"))
         self.assertIsNotNone(scoped.get("TeamTask"))
+
+    def test_identity_wrapper_preserves_permission_exemption(self):
+        class ExemptTeamTask(DummyTool):
+            permission_exempt = True
+            side_effect = True
+
+        registry = self.make_registry()
+        registry._tools["TeamTask"] = ExemptTeamTask("TeamTask")
+        scoped = ScopedToolRegistry(registry, TeamRuntimeIdentity("team_lead", "t"))
+        tool = scoped.get("TeamTask")
+        decision = evaluate_permission(
+            ToolCall("1", "TeamTask", {"action": "list"}),
+            tool,
+            ToolContext(Path.cwd(), permissions=PermissionContext(Path.cwd(), mode="default")),
+        )
+        self.assertTrue(decision.allowed)
 
 
 if __name__ == "__main__":

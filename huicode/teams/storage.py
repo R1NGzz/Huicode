@@ -27,6 +27,7 @@ class TeamPaths:
         self.approvals = self.root / "approvals.json"
         self.events = self.root / "events.jsonl"
         self.integration = self.root / "integration.json"
+        self.baseline = self.root / "baseline.json"
         self.members = self.root / "members"
         self.mailboxes = self.root / "mailboxes"
         self.locks = self.root / "locks"
@@ -147,7 +148,7 @@ def construct(cls: type[T], raw: Any, label: str) -> T:
     names = {item.name for item in fields(cls)}
     try:
         values = {name: raw[name] for name in names if name in raw}
-        for name in ("dependencies", "recipients", "member_branches", "merged_members"):
+        for name in ("dependencies", "recipients", "member_branches", "merged_members", "paths"):
             if name in values:
                 values[name] = tuple(values[name])
         return cls(**values)

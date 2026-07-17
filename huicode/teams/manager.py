@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import queue
+import hashlib
+import os
+import re
 import shutil
 import subprocess
+import tempfile
+import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -17,15 +22,51 @@ from .backends import BackendHandle, CoroutineBackend, MemberBackendSelector, Me
 from .mailbox import MailboxStore, NameRegistry
 from .member_runner import AssignmentExecutor, TeamMemberRunner, unavailable_executor
 from .naming import new_id, team_path, validate_name
-from .storage import TeamStore
+from .storage import TeamStore, atomic_write_json, read_json
 from .tasks import SharedTaskStore
 from .terminal_backends import TmuxBackend, WindowsTerminalBackend
-from .types import TeamError, TeamEvent, TeamMemberRecord, TeamRecord
+from .types import TeamError, TeamEvent, TeamMemberRecord, TeamRecord, record_dict
 from .worktrees import TeamWorktree, TeamWorktreeService
 
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _extract_task_paths(text: str, workspace: Path) -> tuple[str, ...]:
+    candidates = re.findall(r"(?<![\w.])([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_+-]+)", text)
+    result: list[str] = []
+    for candidate in candidates:
+        relative = candidate.replace("\\", "/").lstrip("./")
+        if not relative or relative in result:
+            continue
+        target = (workspace / relative).resolve()
+        try:
+            target.relative_to(workspace.resolve())
+        except ValueError:
+            continue
+        if target.is_file():
+            result.append(relative)
+    return tuple(result)
+
+
+def _normalize_task_paths(paths: tuple[str, ...], workspace: Path) -> tuple[str, ...]:
+    result: list[str] = []
+    root = workspace.resolve()
+    for raw in paths:
+        if not isinstance(raw, str) or not raw.strip():
+            raise TeamError("invalid_task_path", "任务 paths 必须是非空项目相对路径")
+        candidate = Path(raw.replace("\\", "/"))
+        if candidate.is_absolute():
+            raise TeamError("invalid_task_path", f"任务路径必须相对于项目目录: {raw}")
+        target = (root / candidate).resolve()
+        try:
+            relative = target.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise TeamError("task_path_escape", f"任务路径越出项目目录: {raw}") from exc
+        if relative not in result:
+            result.append(relative)
+    return tuple(result)
 
 
 class TeamManager:
@@ -71,10 +112,36 @@ class TeamManager:
         members = store.load_members()
         self._attach(store, team, members)
         for member in members:
+            self._quiesce_previous_terminal_worker(member)
+        self._recover_persisted_assignments(members)
+        for task in self._require_tasks().list():
+            if task.status in {"pending", "blocked"} and task.assignee:
+                self._prepare_task_baseline(task, task.description or task.title)
+        for member in members:
             if member.status not in {"stopped", "failed"}:
                 self._restore_member(member)
         self._event("team_resumed", f"团队 {team.name} 已恢复")
         return team
+
+    def _recover_persisted_assignments(self, members: tuple[TeamMemberRecord, ...]) -> None:
+        mailbox = self._require_mailbox()
+        tasks = self._require_tasks()
+        for member in members:
+            messages, _ = mailbox.inbox(member.name, unread_only=True)
+            for message in messages:
+                if message.type != "assignment" or not message.task_id:
+                    continue
+                task = tasks.get(message.task_id)
+                if task.status in {"pending", "blocked"} and not task.assignee:
+                    tasks.assign(task.id, member.name)
+
+    def _quiesce_previous_terminal_worker(self, member: TeamMemberRecord) -> None:
+        if member.actual_backend not in {"tmux", "windows_terminal"}:
+            return
+        mailbox = self._require_mailbox()
+        message = mailbox.send("lead", (member.name,), "切换团队成员运行后端", message_type="stop", correlation_id=new_id("resume-stop"))
+        time.sleep(min(1.0, max(0.15, self.config.member_idle_poll_ms / 1000 * 3)))
+        mailbox.mark_read(member.name, message.id)
 
     def list_teams(self) -> tuple[str, ...]:
         if not self.root.exists():
@@ -141,9 +208,27 @@ class TeamManager:
     def assign(self, task_id: str, member: str, prompt: str) -> None:
         mailbox = self._require_mailbox()
         task = self._require_tasks().get(task_id)
-        mailbox.send("lead", (member,), prompt, message_type="assignment", correlation_id=task.id, task_id=task.id)
+        if not any(item.name == member for item in self.members()):
+            raise TeamError("unknown_member", f"未知团队成员: {member}")
+        baseline_paths = self._prepare_task_baseline(task, prompt)
+        task = self._require_tasks().assign(task.id, member)
+        assignment = prompt.strip() or task.description or task.title
+        mailbox.send("lead", (member,), assignment, message_type="assignment", correlation_id=task.id, task_id=task.id)
         self._wake_member(member)
-        self._event("task_assigned", f"任务 {task.id} 已分配给 {member}", member=member, task_id=task.id)
+        self._event("task_assigned", f"任务 {task.id} 已分配给 {member}", member=member, task_id=task.id, data={"baseline_paths": list(baseline_paths)})
+
+    def wait_tasks(self, task_ids: tuple[str, ...], timeout_seconds: float = 60.0) -> dict[str, object]:
+        selected = task_ids or tuple(item.id for item in self._require_tasks().list())
+        if not selected:
+            return {"completed": True, "tasks": []}
+        deadline = time.monotonic() + max(0.1, min(timeout_seconds, 300.0))
+        while True:
+            tasks = [self._require_tasks().get(task_id) for task_id in selected]
+            if all(item.status in {"completed", "failed"} for item in tasks):
+                return {"completed": True, "tasks": [record_dict(item) for item in tasks]}
+            if time.monotonic() >= deadline:
+                return {"completed": False, "timed_out": True, "tasks": [record_dict(item) for item in tasks]}
+            time.sleep(0.1)
 
     def send_message(self, sender: str, recipients: tuple[str, ...], body: str):  # noqa: ANN201
         message = self._require_mailbox().send(sender, recipients, body)
@@ -242,6 +327,8 @@ class TeamManager:
             pair = self._handles.get(member.id)
             if pair is not None:
                 try:
+                    if member.actual_backend in {"tmux", "windows_terminal"} and self.mailbox is not None:
+                        self.mailbox.send("lead", (member.name,), "HuiCode 主会话关闭", message_type="stop", correlation_id=new_id("close-stop"))
                     pair[0].stop(pair[1], self.config.shutdown_wait_seconds)  # type: ignore[attr-defined]
                 except Exception:
                     pass
@@ -270,7 +357,8 @@ class TeamManager:
     def _restore_member(self, member: TeamMemberRecord) -> None:
         team = self._require_team()
         worktree = self.worktrees.prepare_member(team.id, member.id, member.name)
-        selected = self.selector.select(member.requested_backend)
+        requested = self.config.default_backend if member.requested_backend == "auto" else member.requested_backend
+        selected = self.selector.select(requested)
         spec = MemberLaunchSpec(str(self._require_store().paths.root), member.id, member.name, str(worktree.path), self.config_path)
         handle = selected.launch(spec)
         updated = replace(member, actual_backend=selected.kind, status="idle", worktree_path=str(worktree.path), branch=worktree.branch, backend_handle={**handle.data, "id": handle.id}, updated_at=_now())
@@ -314,6 +402,85 @@ class TeamManager:
 
     def _git(self, *args: str) -> str:
         completed = subprocess.run(["git", *args], cwd=self.workspace, shell=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if completed.returncode != 0:
+            raise TeamError("git_failed", (completed.stderr or completed.stdout).strip()[:800])
+        return completed.stdout.strip()
+
+    def _prepare_task_baseline(self, task, prompt: str) -> tuple[str, ...]:  # noqa: ANN001
+        paths = _normalize_task_paths(tuple(task.paths), self.workspace) if task.paths else _extract_task_paths(f"{task.title}\n{task.description}\n{prompt}", self.workspace)
+        if not paths or not self.members():
+            return ()
+        worktrees = [Path(item.worktree_path).resolve() for item in self.members()]
+        if all(self._paths_exist_in_commit(path, paths) for path in worktrees):
+            return paths
+        heads = {self._git_at(path, "rev-parse", "HEAD") for path in worktrees}
+        if len(heads) != 1:
+            raise TeamError("baseline_diverged", "成员分支已经分叉，不能再注入新的共享文件基线", {"paths": list(paths)})
+        base = next(iter(heads))
+        for path in worktrees:
+            if self._git_at(path, "status", "--porcelain", "--untracked-files=all"):
+                raise TeamError("worktree_dirty", f"成员 Worktree 存在未提交修改，不能更新共享基线: {path}")
+        snapshot = self._snapshot_paths(base, paths)
+        if snapshot == base:
+            return paths
+        for path in worktrees:
+            self._git_at(path, "merge", "--ff-only", snapshot)
+        return paths
+
+    def _snapshot_paths(self, base: str, paths: tuple[str, ...]) -> str:
+        with tempfile.TemporaryDirectory(prefix="huicode-team-index-") as directory:
+            index = Path(directory) / "index"
+            env = os.environ.copy()
+            env.update({
+                "GIT_INDEX_FILE": str(index),
+                "GIT_AUTHOR_NAME": "HuiCode Team",
+                "GIT_AUTHOR_EMAIL": "team@huicode.local",
+                "GIT_COMMITTER_NAME": "HuiCode Team",
+                "GIT_COMMITTER_EMAIL": "team@huicode.local",
+            })
+            self._git_env(env, "read-tree", base)
+            self._git_env(env, "add", "-A", "--", *paths)
+            tree = self._git_env(env, "write-tree")
+            if tree == self._git("rev-parse", f"{base}^{{tree}}"):
+                missing = [relative for relative in paths if not self._path_exists_at_revision(base, relative)]
+                if missing:
+                    raise TeamError("task_path_unavailable", "任务路径不存在或被 Git 忽略，无法建立成员共同基线", {"paths": missing})
+                return base
+            commit = self._git_env(env, "commit-tree", tree, "-p", base, "-m", "HuiCode Team shared task baseline")
+            self._record_baseline_paths(paths, commit)
+            return commit
+
+    def _record_baseline_paths(self, paths: tuple[str, ...], commit: str) -> None:
+        store = self._require_store()
+        entries: dict[str, object] = {}
+        if store.paths.baseline.exists():
+            entries.update(read_json(store.paths.baseline).get("entries", {}))
+        for relative in paths:
+            target = (self.workspace / relative).resolve()
+            if target.is_file():
+                entries[relative] = {"sha256": hashlib.sha256(target.read_bytes()).hexdigest(), "commit": commit}
+        atomic_write_json(store.paths.baseline, {"version": 1, "entries": entries})
+
+    def _paths_exist_in_commit(self, worktree: Path, paths: tuple[str, ...]) -> bool:
+        for relative in paths:
+            completed = subprocess.run(["git", "cat-file", "-e", f"HEAD:{relative}"], cwd=worktree, shell=False, capture_output=True)
+            if completed.returncode != 0:
+                return False
+        return True
+
+    def _path_exists_at_revision(self, revision: str, relative: str) -> bool:
+        completed = subprocess.run(["git", "cat-file", "-e", f"{revision}:{relative}"], cwd=self.workspace, shell=False, capture_output=True)
+        return completed.returncode == 0
+
+    def _git_env(self, env: dict[str, str], *args: str) -> str:
+        completed = subprocess.run(["git", *args], cwd=self.workspace, env=env, shell=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if completed.returncode != 0:
+            raise TeamError("git_failed", (completed.stderr or completed.stdout).strip()[:800])
+        return completed.stdout.strip()
+
+    @staticmethod
+    def _git_at(path: Path, *args: str) -> str:
+        completed = subprocess.run(["git", *args], cwd=path, shell=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if completed.returncode != 0:
             raise TeamError("git_failed", (completed.stderr or completed.stdout).strip()[:800])
         return completed.stdout.strip()

@@ -37,6 +37,14 @@ class TeamMemberRunner:
                 break
             assignments = [item for item in messages if item.type == "assignment" and item.task_id]
             if not assignments:
+                assigned_tasks = [
+                    item for item in self.tasks.list()
+                    if item.assignee == spec.member_name and item.status == "pending"
+                ]
+                for task in assigned_tasks:
+                    self._execute(spec, task.id, task.description or task.title)
+                if assigned_tasks:
+                    continue
                 handle.wake_event.wait(self.poll_seconds)
                 handle.wake_event.clear()
                 continue
@@ -69,6 +77,8 @@ class TeamMemberRunner:
     def _execute(self, spec: MemberLaunchSpec, task_id: str, prompt: str) -> None:
         task = self.tasks.get(task_id)
         if task.status not in {"pending", "blocked"}:
+            return
+        if task.status == "blocked":
             return
         task = self.tasks.claim(task.id, spec.member_name, task.version)
         self.status_callback(spec.member_name, "working")

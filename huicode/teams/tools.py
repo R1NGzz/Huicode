@@ -44,23 +44,28 @@ class TeamTool(_TeamTool):
 
 class TeamTaskTool(_TeamTool):
     name = "TeamTask"
-    description = "管理团队共享任务及依赖。"
-    parameters = {"type": "object", "properties": {"action": {"type": "string", "enum": ["create", "list", "get", "claim", "update", "delete", "assign"]}, "task_id": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "dependencies": {"type": "array", "items": {"type": "string"}}, "member": {"type": "string"}, "prompt": {"type": "string"}, "expected_version": {"type": "integer"}, "status": {"type": "string"}, "result_summary": {"type": "string"}}, "required": ["action"], "additionalProperties": False}
+    description = "创建并分配团队共享任务。普通 TeamMessage 不会启动任务；必须用 assign。分配完用 wait 等待成员完成并汇总结果。"
+    permission_exempt = True
+    parameters = {"type": "object", "properties": {"action": {"type": "string", "enum": ["create", "list", "get", "claim", "update", "delete", "assign", "wait"]}, "task_id": {"type": "string"}, "task_ids": {"type": "array", "items": {"type": "string"}}, "title": {"type": "string"}, "description": {"type": "string"}, "paths": {"type": "array", "items": {"type": "string"}, "description": "任务会读写的项目相对路径；用于给所有成员建立一致 Git 基线"}, "dependencies": {"type": "array", "items": {"type": "string"}}, "member": {"type": "string", "description": "assign 必填，目标 Team 成员名"}, "prompt": {"type": "string", "description": "assign 的执行指令；省略时使用任务 description/title"}, "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 300}, "expected_version": {"type": "integer"}, "status": {"type": "string"}, "result_summary": {"type": "string"}}, "required": ["action"], "additionalProperties": False}
     def run(self, args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context
         tasks = self.manager._require_tasks(); action = args.get("action")
-        if action == "create": return self._run(lambda: tasks.create(str(args.get("title", "")), str(args.get("description", "")), tuple(args.get("dependencies") or ())))
+        if action == "create": return self._run(lambda: tasks.create(str(args.get("title", "")), str(args.get("description", "")), tuple(args.get("dependencies") or ()), tuple(args.get("paths") or ())))
         if action == "list": return self._run(lambda: {"tasks": [record_dict(item) for item in tasks.list()]})
         if action == "get": return self._run(lambda: tasks.get(str(args.get("task_id", ""))))
         if action == "claim": return self._run(lambda: tasks.claim(str(args.get("task_id", "")), str(args.get("member", "")), int(args.get("expected_version", 0))))
         if action == "update": return self._run(lambda: tasks.update(str(args.get("task_id", "")), expected_version=int(args.get("expected_version", 0)), status=args.get("status"), result_summary=args.get("result_summary")))
         if action == "delete": return self._run(lambda: tasks.delete(str(args.get("task_id", "")), int(args.get("expected_version", 0))) or {"deleted": True})
-        if action == "assign": return self._run(lambda: self.manager.assign(str(args.get("task_id", "")), str(args.get("member", "")), str(args.get("prompt", ""))) or {"assigned": True})
+        if action == "assign":
+            if not args.get("task_id") or not args.get("member"):
+                return ToolResult.failure("invalid_request", "assign 必须提供 task_id 和 member")
+            return self._run(lambda: self.manager.assign(str(args["task_id"]), str(args["member"]), str(args.get("prompt", ""))) or {"assigned": True})
+        if action == "wait": return self._run(lambda: self.manager.wait_tasks(tuple(args.get("task_ids") or ()), float(args.get("timeout_seconds", 60))))
         return ToolResult.failure("invalid_request", "未知 TeamTask action")
 
 
 class TeamMessageTool(_TeamTool):
-    name = "TeamMessage"; description = "向团队成员发送消息或读取邮箱。"; side_effect = True
+    name = "TeamMessage"; description = "发送协作消息或读取邮箱；消息不会创建、分配或启动任务，派活必须使用 TeamTask(assign)。"; side_effect = True; permission_exempt = True
     parameters = {"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "broadcast", "inbox", "read"]}, "sender": {"type": "string"}, "recipients": {"type": "array", "items": {"type": "string"}}, "body": {"type": "string"}, "message_id": {"type": "string"}}, "required": ["action"], "additionalProperties": False}
     def run(self, args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context; action=args.get("action"); box=self.manager._require_mailbox(); sender=str(args.get("sender", "lead"))
@@ -80,6 +85,7 @@ class TeamPlanRequestTool(_TeamTool):
 
 class TeamPlanDecisionTool(_TeamTool):
     name = "TeamPlanDecision"; description = "Lead 按 request_id 批准或驳回成员计划。"
+    permission_exempt = True
     parameters = {"type": "object", "properties": {"request_id": {"type": "string"}, "decision": {"type": "string", "enum": ["allow", "deny"]}, "feedback": {"type": "string"}}, "required": ["request_id", "decision"], "additionalProperties": False}
     def run(self, args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context

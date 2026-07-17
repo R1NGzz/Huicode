@@ -20,7 +20,29 @@ class FakeConfirmer:
         return PermissionConfirmation(self.action)
 
 
+class InternalTeamTool:
+    name = "TeamTask"
+    side_effect = True
+    permission_exempt = True
+
+
 class PermissionEngineTests(unittest.TestCase):
+    def test_internal_team_orchestration_does_not_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            confirmer = FakeConfirmer("deny")
+            context = ToolContext(
+                workspace,
+                permissions=PermissionContext(workspace=workspace, mode="default", confirmer=confirmer),
+            )
+            decision = evaluate_permission(
+                ToolCall("1", "TeamTask", {"action": "assign"}),
+                InternalTeamTool(),
+                context,
+            )
+        self.assertTrue(decision.allowed)
+        self.assertEqual([], confirmer.requests)
+
     def test_internal_hook_logs_are_protected_from_writes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

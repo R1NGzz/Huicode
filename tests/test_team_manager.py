@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -135,6 +136,54 @@ class TeamManagerTests(unittest.TestCase):
             self.assertEqual({}, member.role_profile)
             self.assertIn("role_catalog_warning", {event.kind for event in manager.drain_events()})
             manager.close()
+
+    def test_member_self_claims_persisted_assignment_without_mail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executed = []
+            def executor(member, task_id, prompt, workspace):
+                executed.append((member, task_id, prompt, workspace))
+                return True, "done", {}
+            manager = TeamManager(
+                Path.cwd(), TeamConfig(enabled=True, default_backend="coroutine", member_idle_poll_ms=20),
+                FakeWorktreeManager(root / "worktrees"), root=root / "teams",
+                assignment_executor=executor,
+            )
+            manager.create("demo")
+            manager.spawn_member("alice", "general")
+            task = manager.tasks.create("self claim", "do it")
+            manager.tasks.assign(task.id, "alice")
+            finished = self.wait_status(manager, task.id, "completed")
+            self.assertEqual("alice", finished.assignee)
+            self.assertEqual(1, len(executed))
+            waited = manager.wait_tasks((task.id,), 1)
+            self.assertTrue(waited["completed"])
+            manager.close()
+
+    def test_resume_recovers_old_assignment_and_switches_auto_backend(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = TeamConfig(enabled=True, default_backend="coroutine", member_idle_poll_ms=20)
+            worktrees = FakeWorktreeManager(root / "worktrees")
+            first = TeamManager(Path.cwd(), config, worktrees, root=root / "teams")
+            first.create("demo")
+            member = first.spawn_member("alice", "general")
+            task = first.tasks.create("resume work")
+            first.close()
+            first.mailbox.send("lead", ("alice",), "do it", message_type="assignment", correlation_id=task.id, task_id=task.id)
+            first.store.save_members([replace(member, actual_backend="windows_terminal", requested_backend="auto")])
+
+            executed = []
+            second = TeamManager(
+                Path.cwd(), config, worktrees, root=root / "teams",
+                assignment_executor=lambda member, task_id, prompt, workspace: (executed.append(task_id) is None, "done", {}),
+            )
+            second.resume("demo")
+            finished = self.wait_status(second, task.id, "completed")
+            self.assertEqual("alice", finished.assignee)
+            self.assertEqual([task.id], executed)
+            self.assertEqual("coroutine", second.members()[0].actual_backend)
+            second.close()
 
 
 if __name__ == "__main__":

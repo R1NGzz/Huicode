@@ -374,6 +374,12 @@ Worktree 根目录必须位于仓库内并被 Git 忽略。`copy_files` 复制�
 
 Team 工具作用域按当前 Manager 状态动态计算：即使在同一轮 Agent Loop 中先 `resume` 团队，下一次模型请求也会立即切换为 Lead 工具集。后台通知通过 prompt_toolkit 事件循环线程安全输出；子 Agent 完成结果最多显示 4000 字符，超出时可用 `/tasks <task-id>` 查看完整结果。
 
+Team 的可执行任务流程固定为：`TeamTask(create)` 创建任务并通过 `paths` 声明目标文件，`TeamTask(assign)` 分配成员，`TeamTask(wait)` 等待终态，最后 `TeamIntegrate(start/publish)` 汇总发布。`TeamMessage` 只用于沟通，不会启动任务。TeamTask、TeamMessage 和计划决策属于内部编排操作，保持串行执行但不弹权限确认；文件写入仍受成员沙箱、黑名单、项目规则和角色权限约束。
+
+任务首次 assign 前，HuiCode 会把 `paths` 中主工作区的当前文件做成不移动用户分支的共享 Git 基线，并让所有成员分支从同一版本开始。未跟踪但未被 Git 忽略的任务文件同样支持；不存在或被忽略的路径会在派发前报错。成员自然完成后，HuiCode 自动提交其 Worktree 变更。发布时只阻止已跟踪文件的未提交修改，无关未跟踪文件不会挡住 fast-forward；被纳入共享基线的未跟踪任务文件必须保持原始哈希不变，才能安全发布为最终跟踪文件。
+
+Windows 上若不需要独立窗格，推荐使用 `default_backend: coroutine`。恢复旧 Team 时，`requested_backend: auto` 会采用当前默认后端；未读 assignment 会补回 assignee，成员也会从共享任务表自领已分配的 pending 任务，不依赖一次性的唤醒事件。
+
 配置示例：
 
 ```yaml

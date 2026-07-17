@@ -39,6 +39,15 @@ class TeamTaskTests(unittest.TestCase):
                 tasks.update(first.id, expected_version=first.version, result_summary="stale")
             self.assertGreater(changed.version, first.version)
 
+    def test_assign_persists_member_and_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tasks = make_tasks(Path(temp))
+            task = tasks.create("edit", paths=("DEMO.md",))
+            assigned = tasks.assign(task.id, "alice")
+            self.assertEqual("alice", assigned.assignee)
+            self.assertEqual("pending", assigned.status)
+            self.assertEqual(("DEMO.md",), assigned.paths)
+
 
 if __name__ == "__main__":
     unittest.main()

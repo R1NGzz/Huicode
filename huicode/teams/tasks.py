@@ -26,7 +26,7 @@ class SharedTaskStore:
                 return task
         raise TeamError("unknown_task", f"未知团队任务: {task_id}")
 
-    def create(self, title: str, description: str = "", dependencies: tuple[str, ...] = ()) -> TeamTaskRecord:
+    def create(self, title: str, description: str = "", dependencies: tuple[str, ...] = (), paths: tuple[str, ...] = ()) -> TeamTaskRecord:
         if not title.strip():
             raise TeamError("invalid_task", "任务标题不能为空")
         with self.store.lock("tasks"):
@@ -34,7 +34,7 @@ class SharedTaskStore:
             self._validate_dependencies(tasks, "", dependencies)
             now = _now()
             status = "blocked" if dependencies else "pending"
-            task = TeamTaskRecord(new_id("team-task"), title.strip(), description.strip(), status, None, tuple(dependencies), "", 1, now, now)
+            task = TeamTaskRecord(new_id("team-task"), title.strip(), description.strip(), status, None, tuple(dependencies), "", 1, now, now, tuple(paths))
             tasks.append(task)
             self._save(tasks)
             return task
@@ -63,6 +63,12 @@ class SharedTaskStore:
 
     def claim(self, task_id: str, member: str, expected_version: int) -> TeamTaskRecord:
         return self.update(task_id, expected_version=expected_version, assignee=member, status="in_progress")
+
+    def assign(self, task_id: str, member: str) -> TeamTaskRecord:
+        current = self.get(task_id)
+        if current.status not in {"pending", "blocked"}:
+            raise TeamError("task_not_assignable", f"任务当前状态不能分配: {current.status}")
+        return self.update(task_id, expected_version=current.version, assignee=member)
 
     def delete(self, task_id: str, expected_version: int) -> None:
         with self.store.lock("tasks"):

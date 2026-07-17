@@ -991,6 +991,35 @@ Agent Team 模块、工具注册和作用域测试都已通过，但用户按原
 - 从工作线程调用 TUI 框架前，要区分普通函数、协程和线程安全调度入口，并把 RuntimeWarning 纳入失败条件。
 - 后台结果的持久化长度、通知长度和完整结果查询入口要分别定义，截断必须提供恢复路径。
 
+## 踩坑 41：Team 只有工具外壳，没有“分配、执行、提交、汇总”真实闭环
+
+现象：
+Lead 创建任务后只发 TeamMessage，成员始终 idle；手动 assign 后 Alice 报文件不存在且只有只读工具，Bob 的 assignment 一直未读。每个 TeamTask/TeamMessage 还弹权限确认，后台通知插入确认界面后输入被误判为 deny。即使成员以后能修改，主工作区大量无关未跟踪文件也会让集成发布永久失败。
+
+根因：
+- TeamMessage 与 assignment 语义没有在 Schema 和执行层区分，普通消息不会被 runner 当任务消费。
+- assign 只写邮箱、不持久化 assignee，成员错过 worker 唤醒后无法从共享任务表恢复工作。
+- `approval_required=false` 仍挂 ApprovalGate，非交互成员的 default 权限又没有 confirmer，Write/Edit 被双重剥夺。
+- Git Worktree 只包含提交历史，主工作区未跟踪的任务文件没有共同基线。
+- 成员结束后没有自动提交，Lead 也没有可阻塞等待全部结果的工具动作。
+- Windows Terminal 启动只拿到 wt 客户端 PID，单个 pane 退出后 roster 仍伪装为 idle。
+- 发布把所有无关 untracked 文件也当作 dirty，真实脏工作区几乎不可能通过。
+
+后来补救：
+- TeamTask 增加严格 assign 参数和 wait 动作；assign 持久化 assignee，runner 会从任务表自领 pending 工作。
+- Team 内部编排工具保持串行但免人工确认，身份包装器透传免确认属性。
+- 无需审批的成员使用非交互 permissive 模式，但黑名单、沙箱、显式 deny 和角色 strict 仍生效。
+- 任务 `paths` 在首次派发前生成共享 Git 基线，支持安全的未跟踪文件；成员完成后自动提交。
+- Integration 允许无关未跟踪文件存在，对基线文件做哈希校验后安全 fast-forward 发布。
+- Windows 本地默认切到 coroutine；恢复旧 Team 时回收终端 worker、补 assignee 和基线，再启动可靠后端。
+- 新增真实 Git 端到端测试：双成员并行修改同一未跟踪文件的不同 section，等待、自动提交、合并、发布全部成功。
+
+以后写 spec 要补：
+- 并发 Agent 功能的验收必须从自然语言请求一路跑到用户主工作区出现最终修改，不能把“任务已入队”当完成。
+- 任务通知、任务分配和任务唤醒要分层；可靠性必须来自持久化状态，事件只用于降延迟。
+- Worktree 输入基线、成员输出提交和主分支发布要作为一个事务链设计，并覆盖 dirty/untracked/ignored 文件。
+- 非交互 worker 的权限模式必须单独验收真实 Write/Edit，不能只断言工具名可见。
+
 ## 可复用 Spec Checklist
 
 以后每次写 HuiCode 新章节 spec，可以先问这几件事：

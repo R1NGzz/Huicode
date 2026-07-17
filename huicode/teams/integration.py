@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 from .manager import TeamManager
 from .naming import new_id
-from .storage import atomic_write_json
+from .storage import atomic_write_json, read_json
 from .types import IntegrationRecord, TeamError, record_dict
 
 
@@ -53,16 +54,45 @@ class IntegrationManager:
         current = self._git("rev-parse", self.record.target_branch)
         if current != self.record.expected_target_commit:
             raise TeamError("target_changed", "目标分支已变化，需要重新集成")
-        if self._git("status", "--porcelain"):
+        if self._git("status", "--porcelain", "--untracked-files=no"):
             raise TeamError("target_dirty", "用户当前工作区存在未提交修改，拒绝发布")
         if self._git("branch", "--show-current") != self.record.target_branch:
             raise TeamError("target_not_checked_out", "目标分支当前未在主工作区检出")
+        backups = self._release_baseline_untracked_files()
         completed = self._execute("merge", "--ff-only", self.record.integration_branch)
         if completed.returncode != 0:
+            for path, content in backups.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
             raise TeamError("publish_failed", (completed.stderr or completed.stdout).strip()[:800])
         self.record = replace(self.record, status="published")
         self._save(self.record)
         return self.record
+
+    def _release_baseline_untracked_files(self) -> dict[Path, bytes]:
+        store = self.manager._require_store()
+        if not store.paths.baseline.exists():
+            return {}
+        entries = read_json(store.paths.baseline).get("entries", {})
+        if not isinstance(entries, dict):
+            return {}
+        untracked = set(self._git("ls-files", "--others", "--exclude-standard", "-z").split("\0"))
+        backups: dict[Path, bytes] = {}
+        for relative, metadata in entries.items():
+            if relative not in untracked or not isinstance(metadata, dict):
+                continue
+            path = (self.manager.workspace / relative).resolve()
+            try:
+                path.relative_to(self.manager.workspace.resolve())
+            except ValueError as exc:
+                raise TeamError("baseline_escape", f"共享基线路径越界: {relative}") from exc
+            content = path.read_bytes()
+            if hashlib.sha256(content).hexdigest() != metadata.get("sha256"):
+                raise TeamError("baseline_changed", f"任务文件在团队运行期间被用户修改，拒绝发布: {relative}")
+            backups[path] = content
+        for path in backups:
+            path.unlink()
+        return backups
 
     def continue_after_resolution(self) -> IntegrationRecord:
         if self.record is None or self.record.status != "conflicted":

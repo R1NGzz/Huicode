@@ -125,6 +125,7 @@ class IdentityBoundTeamTool:
         self.description = delegate.description
         self.parameters = delegate.parameters
         self.side_effect = delegate.side_effect
+        self.permission_exempt = getattr(delegate, "permission_exempt", False)
 
     def run(self, args: dict[str, Any], context: ToolContext) -> ToolResult:
         values = dict(args)

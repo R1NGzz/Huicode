@@ -62,6 +62,7 @@ class TeamTaskRecord:
     version: int
     created_at: str
     updated_at: str
+    paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

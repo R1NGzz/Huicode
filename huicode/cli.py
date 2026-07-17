@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -239,11 +239,13 @@ def _run_chat(
         member_registry = ScopedToolRegistry(
             tool_registry,
             TeamRuntimeIdentity("team_member", team_manager.team.id if team_manager.team else None, member),
-            approval_gate=team_manager.approvals,
+            approval_gate=team_manager.approvals if member_record is not None and member_record.approval_required else None,
             task_id=task_id,
             allowed_tools=role_profile.get("allowed_tools") if isinstance(role_profile.get("allowed_tools"), list) else None,
             denied_tools=role_profile.get("denied_tools") if isinstance(role_profile.get("denied_tools"), list) else (),
         )
+        if requested_mode != "strict":
+            member_permission.mode = "permissive"
         text_parts: list[str] = []
         usage: dict[str, object] = {}
         stop_reason = "error"
@@ -283,6 +285,14 @@ def _run_chat(
             elif event.kind == "done":
                 stop_reason = event.stop_reason
         summary = "".join(text_parts).strip() or f"成员停止: {stop_reason}"
+        if stop_reason == "final":
+            try:
+                commit = _commit_team_member_changes(member_workspace, member, task_id)
+                if commit:
+                    summary += f"\n\nHuiCode 已提交成员变更: {commit}"
+            except Exception as exc:  # noqa: BLE001
+                stop_reason = "error"
+                summary += f"\n\n成员变更自动提交失败: {exc}"
         if team_manager.store is not None:
             session_path = team_manager.store.paths.member_session(member)
             for message in member_state.messages[team_saved_counts.get(member, 0):]:
@@ -677,7 +687,8 @@ def _run_request(
         team_block = (
             '<huicode_instruction type="team_lead" priority="highest">\n'
             f"你是团队 {team_status['team']} 的 Team Lead。成员和任务状态: {team_status}。\n"
-            "只能通过 Team(action=spawn)、TeamTask(action=assign)、TeamMessage、TeamPlanDecision 和 TeamIntegrate 组织成员协作。\n"
+            "只能通过 Team(action=spawn)、TeamTask(action=create/assign/wait)、TeamMessage、TeamPlanDecision 和 TeamIntegrate 组织成员协作。\n"
+            "TeamMessage 只是消息，不会启动任务。创建后必须 assign；分配全部任务后必须 wait 到终态，检查结果，再 TeamIntegrate 合并发布。\n"
             "不要使用普通 Agent 代替 Team 成员；Team 激活期间该工具不可用。\n"
             f"Coordinator 模式: {str(coordinator).lower()}。\n"
             "</huicode_instruction>",
@@ -757,25 +768,49 @@ def _team_notification_pump(manager: TeamManager, prompt_session, stop_event: th
 
 def _print_background_message(prompt_session, message: str) -> None:  # noqa: ANN001
     if prompt_session is not None:
-        coroutine = None
         try:
             loop = prompt_session.app.loop
             if loop is not None and loop.is_running():
-                from prompt_toolkit.application import run_in_terminal
-
-                coroutine = run_in_terminal(lambda text=message: print(text))
-                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
-                future.add_done_callback(_consume_background_future)
+                loop.call_soon_threadsafe(lambda text=message: _print_and_refresh(prompt_session, text))
                 return
         except Exception:
-            if coroutine is not None:
-                coroutine.close()
+            pass
     print(message)
 
 
-def _consume_background_future(future) -> None:  # noqa: ANN001
+def _commit_team_member_changes(workspace: Path, member: str, task_id: str) -> str:
+    status = _run_git(workspace, "status", "--porcelain", "--untracked-files=all")
+    if not status:
+        return ""
+    _run_git(workspace, "add", "-A")
+    _run_git(
+        workspace,
+        "-c", "user.name=HuiCode Team",
+        "-c", "user.email=team@huicode.local",
+        "commit", "-m", f"team({member}): complete {task_id}",
+    )
+    return _run_git(workspace, "rev-parse", "--short", "HEAD")
+
+
+def _run_git(workspace: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=workspace,
+        shell=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout).strip()[:800])
+    return completed.stdout.strip()
+
+
+def _print_and_refresh(prompt_session, message: str) -> None:  # noqa: ANN001
+    print(message)
     try:
-        future.result()
+        prompt_session.app.invalidate()
     except Exception:
         pass
 
@@ -817,7 +852,7 @@ def _run_team_worker(provider: Provider, config: LLMConfig, team_path: Path, mem
     scoped = ScopedToolRegistry(
         registry,
         TeamRuntimeIdentity("team_member", team.id, member.name),
-        approval_gate=approvals,
+        approval_gate=approvals if member.approval_required else None,
         allowed_tools=role_profile.get("allowed_tools") if isinstance(role_profile.get("allowed_tools"), list) else None,
         denied_tools=role_profile.get("denied_tools") if isinstance(role_profile.get("denied_tools"), list) else (),
     )
@@ -830,6 +865,8 @@ def _run_team_worker(provider: Provider, config: LLMConfig, team_path: Path, mem
         workspace,
         requested_mode=requested_mode if requested_mode in {"strict", "default", "permissive"} else None,
     )
+    if requested_mode != "strict":
+        permission.mode = "permissive"
     state = AgentState()
     records, _ = read_jsonl(store.paths.member_session(member.name))
     messages = []
@@ -867,10 +904,19 @@ def _run_team_worker(provider: Provider, config: LLMConfig, team_path: Path, mem
             if event.kind == "text": text_parts.append(event.text)
             elif event.kind == "usage": usage.update(event.data.get("usage", {}))
             elif event.kind == "done": stop_reason = event.stop_reason
+        summary = "".join(text_parts).strip() or f"成员停止: {stop_reason}"
+        if stop_reason == "final":
+            try:
+                commit = _commit_team_member_changes(member_workspace, member_name, task_id)
+                if commit:
+                    summary += f"\n\nHuiCode 已提交成员变更: {commit}"
+            except Exception as exc:  # noqa: BLE001
+                stop_reason = "error"
+                summary += f"\n\n成员变更自动提交失败: {exc}"
         for message in state.messages[saved_count:]:
             append_jsonl(store.paths.member_session(member.name), {"type": "message", "message": message_to_json(message), "task_id": task_id})
         saved_count = len(state.messages)
-        return stop_reason == "final", "".join(text_parts).strip() or f"成员停止: {stop_reason}", usage
+        return stop_reason == "final", summary, usage
 
     runner = TeamMemberRunner(mailbox, tasks, execute, approval_gate=approvals, approval_required=lambda _: member.approval_required, poll_ms=config.teams.member_idle_poll_ms)
     print(f"HuiCode Team Worker: {team.name}/{member.name} backend={member.actual_backend} worktree={workspace}")
