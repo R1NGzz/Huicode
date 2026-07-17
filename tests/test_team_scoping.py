@@ -1,6 +1,7 @@
 import unittest
 
 from huicode.teams.scoping import ScopedToolRegistry
+from huicode.teams.tools import register_team_tools
 from huicode.teams.types import TeamRuntimeIdentity
 from huicode.tools.base import ToolResult
 from huicode.tools.registry import ToolRegistry
@@ -44,6 +45,14 @@ class TeamScopingTests(unittest.TestCase):
         scoped = ScopedToolRegistry(create_default_registry(Path.cwd()), TeamRuntimeIdentity("main"))
         names = {item.name for item in scoped.to_specs()}
         self.assertIn("Read", names)
+
+    def test_registered_main_scope_exposes_team_entry(self):
+        registry = create_default_registry(Path.cwd())
+        register_team_tools(registry, object())
+        scoped = ScopedToolRegistry(registry, TeamRuntimeIdentity("main"))
+        names = {item.name for item in scoped.to_specs()}
+        self.assertIn("Team", names)
+        self.assertNotIn("TeamTask", names)
 
 
 if __name__ == "__main__":

@@ -455,6 +455,8 @@ def _run_chat(
         f"Hooks effective={hook_status.effective} disabled={hook_status.disabled} "
         f"sources={hook_sources}"
     )
+    team_state = "enabled" if team_manager is not None else "disabled"
+    print(f"Team {team_state} backend={config.teams.default_backend}")
     print(f"HuiCode 已连接: {provider.name}:{provider.model}")
     print("输入 /help 查看命令；/plan 进入计划模式，/do 返回默认模式。")
 
