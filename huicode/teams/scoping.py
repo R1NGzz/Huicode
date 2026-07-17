@@ -54,6 +54,7 @@ class ScopedToolRegistry:
             names.add("Team")
         elif self.identity.scope == "team_lead":
             names.update(LEAD_TOOLS)
+            names.discard("Agent")
         elif self.identity.scope == "team_member":
             names.update(MEMBER_TOOLS)
             names.discard("Agent")

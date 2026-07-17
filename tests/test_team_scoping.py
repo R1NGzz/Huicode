@@ -33,7 +33,7 @@ class TeamScopingTests(unittest.TestCase):
         member = {item.name for item in ScopedToolRegistry(registry, TeamRuntimeIdentity("team_member", "t", "m")).list()}
         sub = {item.name for item in ScopedToolRegistry(registry, TeamRuntimeIdentity("subagent")).list()}
         self.assertIn("Team", main); self.assertNotIn("TeamTask", main)
-        self.assertIn("TeamPlanDecision", lead)
+        self.assertIn("TeamPlanDecision", lead); self.assertNotIn("Agent", lead)
         self.assertIn("TeamPlanRequest", member); self.assertNotIn("TeamPlanDecision", member); self.assertNotIn("Agent", member)
         self.assertFalse(sub & {"Team", "TeamTask", "TeamMessage"})
 

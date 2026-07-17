@@ -370,6 +370,8 @@ Worktree 根目录必须位于仓库内并被 Git 忽略。`copy_files` 复制�
 
 `Team(action="spawn")` 的 `name` 是成员名，`role` 是角色标签。角色可以直接使用任意合法名称；若它与当前 Agent Catalog 中的角色同名，成员会继承该 Markdown 定义的系统指令、工具白黑名单、模型、最大轮次和权限模式。项目角色目录会在每次顶层输入及 spawn 前刷新，无需重启。无论角色定义里的 `isolation` 如何设置，Team 成员都强制使用各自独立的 Worktree；spawn 在角色处理或后端启动前失败时不会产生可用成员记录。
 
+团队激活后，Team Lead 的普通 `Agent` 工具会被执行层隐藏，防止临时子 Agent 绕过团队 roster、邮箱和强制 Worktree。Lead 应先用 `Team(action="spawn")` 创建成员，再创建共享任务并用 `TeamTask(action="assign")` 派发。
+
 配置示例：
 
 ```yaml

@@ -14,6 +14,7 @@ Agent Team 章节实现通过验收。团队持久化、成员后端、独立 Wo
 - Git 集成测试：在真实临时仓库中创建独立集成 Worktree，完成双成员分支合并、目标分支漂移拒绝与 `--ff-only` 发布验证。
 - 用户实际 `huicode.yaml` 启动验证：配置解析得到 `teams.enabled=true`，启动横幅显示 `Team enabled backend=auto`，主作用域向 Provider 暴露 `Team` 入口。
 - 动态角色验证：同一进程即时加载项目级 `alice`/`bob` 定义；自由角色可以直接 spawn，定义式角色会固化配置且成功成员返回独立 Worktree 路径和分支。
+- Team Lead 通道验证：团队激活后 Provider 工具列表移除普通 `Agent`，强制经 Team roster、共享任务和独立 Worktree 派活。
 
 ## 验收标准
 

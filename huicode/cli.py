@@ -676,7 +676,8 @@ def _run_request(
         team_block = (
             '<huicode_instruction type="team_lead" priority="highest">\n'
             f"你是团队 {team_status['team']} 的 Team Lead。成员和任务状态: {team_status}。\n"
-            "使用 TeamTask、TeamMessage、TeamPlanDecision 和 TeamIntegrate 组织协作。\n"
+            "只能通过 Team(action=spawn)、TeamTask(action=assign)、TeamMessage、TeamPlanDecision 和 TeamIntegrate 组织成员协作。\n"
+            "不要使用普通 Agent 代替 Team 成员；Team 激活期间该工具不可用。\n"
             f"Coordinator 模式: {str(coordinator).lower()}。\n"
             "</huicode_instruction>",
         )
