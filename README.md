@@ -27,6 +27,16 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 定义式/Fork 式子 Agent、进程内后台任务与 Git Worktree 隔离
 - 长期 Agent Team、共享任务、成员邮箱、计划审批与安全分支集成
 
+## 待完善项
+
+当前优先补齐以下能力，避免功能扩展快于可靠性和安全边界：
+
+- **P0 - 配置、交互与安全**：统一 YAML Schema 校验；提供 `AskUserQuestion` 结构化追问；为 Bash 增加操作系统级隔离、资源配额和跨平台 Shell 适配；加入真实 CLI、Git、MCP 的端到端验收。
+- **P0 - 工具规模控制**：实现 `ToolSearch` 延迟发现机制，避免大量 MCP 工具 Schema 挤占上下文。
+- **P1 - 可恢复与可观测**：提供编辑检查点和 `/rewind`；统一 Agent/子 Agent/Team 的 Trace、审计和任务时间线。
+- **P1 - 现有能力加固**：补齐 MCP 重连、resources/prompts 和只读标记；提高上下文 Token 估算精度；完善多 Provider 故障切换；继续强化 Team 的 worker 健康检查、幂等和依赖调度。
+- **P2 - 产品体验与生态**：升级全屏 TUI、支持 `@文件` 引用和路径补全；提供远程 Web UI、Skill 可信安装和用户级 Worktree 管理。
+
 ## 工具系统
 
 模型可以请求 HuiCode 执行六个核心工具：
