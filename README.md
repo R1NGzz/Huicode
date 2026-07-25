@@ -2,7 +2,7 @@
 
 HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对话、流式输出、工具调用、Agent Loop、Plan Mode、上下文管理、记忆、MCP、Skill、子 Agent、Agent Team、生命周期 Hook、Rich Markdown 渲染、结构化系统提示，以及五层权限系统。
 
-![1784966816413](images/README/1784966816413.png)
+![1784966816413.png](https://github.com/R1NGzz/Huicode/blob/master/images/README/1784966816413.png?raw=true)
 
 ## 能力概览
 
