@@ -5,14 +5,23 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import String, Uuid, func, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from huicode.server.db.base import Base, IdentityMixin, TimestampMixin
+from huicode.server.db.base import IdentityMixin, TimestampMixin
 from huicode.server.db.repositories import WorkspaceRepository
 from huicode.server.db.session import Database
 
 
-class Probe(IdentityMixin, TimestampMixin, Base):
+class _ProbeBase(DeclarativeBase):
+    """探针表自己的 Base，不复用 huicode.server.db.base.Base。
+
+    Base.metadata 是 migrations/env.py 的 target_metadata。探针挂在它上面，
+    alembic autogenerate 就会认为生产库也该有 test_transaction_probe，
+    并且任何 import 过本测试模块的进程都会带上这张表。
+    """
+
+
+class Probe(IdentityMixin, TimestampMixin, _ProbeBase):
     __tablename__ = "test_transaction_probe"
     workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     name: Mapped[str] = mapped_column(String(80), nullable=False)

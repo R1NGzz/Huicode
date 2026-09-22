@@ -84,6 +84,10 @@
 
 ## T4: 实现核心数据模型和初始迁移
 
+**进度（2026-09-22）：** 十一张表与 `0001_initial.py` 已落地。迁移由 `Base.metadata` 渲染生成而非手抄，测试用 `compare_metadata` 断言迁移与模型的 schema 差异为 **0**；`tests/server` 32 项、全仓 **474 项**通过；`alembic heads` 为 `0001_initial`，`upgrade head --sql` 渲染出 PostgreSQL 类型（`UUID`、`TIMESTAMP WITH TIME ZONE`、`JSON`）。顺带修掉一个真实缺陷：`tests/server/test_database.py` 的探针表继承生产 `Base`，会污染 `migrations/env.py` 的 `target_metadata`，使后续 autogenerate 生成一张测试表。
+
+两点需要留意：**真实 PostgreSQL 上的 upgrade/downgrade 仍未执行**（Docker 引擎不可用，与 T3 同源阻塞），结构一致性只在 SQLite 上验证过；`UsageRecord` 属补设计，plan.md 的数据模型一节尚无它的定义，需要回填。工具调用幂等记录（C32）本阶段有意不建表，等 T12/T14 的执行设计。见 [学习记录](../../docs/web-studio-learning/T04-database-models.md)。
+
 **Files:** `huicode/server/db/models.py`, `migrations/versions/0001_initial.py`
 
 **Dependencies:** T3

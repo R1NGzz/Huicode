@@ -19,7 +19,20 @@ class IdentityMixin:
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
 
 
+class CreatedAtMixin:
+    """只写一次的行（事件、审计、用量）用它。
+
+    这些表按"只追加"使用，再加 updated_at 会与这个前提矛盾。
+    """
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False,
+    )
+
+
 class TimestampMixin:
+    """会被改名或改状态的行（会话、Run）用它。"""
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False,
     )
