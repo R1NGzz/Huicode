@@ -5,7 +5,31 @@ __pycache__/
 
 huicode.egg-info/
 .huicode/
+.huicode-healthcheck/
 huicode.yaml
+huicode.eval.yaml
 .huicode-permissions.local.yaml
 
 *.log
+
+# Web 服务端本地密钥配置
+.env
+.env.*
+!.env.example
+.venv/
+
+# 个人材料与本地临时文件，不纳入版本库
+/resume_current.docx
+/resume_review.docx
+/HuiCode_项目面试答辩手册.docx
+/HuiCode_项目面试答辩手册_源稿.md
+/interview_guide_render/
+/build_interview_guide.py
+/Claude_Code与HuiCode对比分析.md
+/test3k.txt
+/test_quote.txt
+/hello.txt
+/测试文档.txt
+/index.html
+/docs/HuiCode与Pi-Agent底层架构对比.md
+/docs/HuiCode未来重构与增强备忘录.md
