@@ -62,6 +62,32 @@ class User(IdentityMixin, CreatedAtMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class RefreshToken(IdentityMixin, CreatedAtMixin, Base):
+    """可轮换、可撤销的刷新令牌。
+
+    只存 SHA-256 哈希，原文仅在签发时返回一次——C57 要求数据库里没有
+    普通用户可读的凭据原文。撤销靠 revoked_at，所以刷新令牌不是自包含 JWT：
+    C16 要求"已注销的 refresh token 不能换取有效身份"，无状态令牌做不到。
+
+    轮换时把旧行标记 revoked 并指向新行（replaced_by_id），这样"同一个
+    refresh token 被用两次"可以识别成重放，而不是静默换发。
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    replaced_by_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("refresh_tokens.id", ondelete="SET NULL"), nullable=True,
+    )
+
+    __table_args__ = (Index("ix_refresh_tokens_user_id_expires_at", "user_id", "expires_at"),)
+
+
 class Workspace(IdentityMixin, CreatedAtMixin, Base):
     __tablename__ = "workspaces"
 

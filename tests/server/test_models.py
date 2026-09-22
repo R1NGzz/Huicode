@@ -31,14 +31,13 @@ from huicode.server.db.models import (
     WorkspaceMember,
 )
 
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0001_initial.py"
-)
+VERSIONS_DIR = Path(__file__).resolve().parents[2] / "migrations" / "versions"
 
 EXPECTED_TABLES = {
     "artifacts",
     "audit_logs",
     "projects",
+    "refresh_tokens",
     "runs",
     "session_events",
     "sessions",
@@ -50,11 +49,43 @@ EXPECTED_TABLES = {
 }
 
 
-def load_migration():
-    spec = importlib.util.spec_from_file_location("migration_0001_initial", MIGRATION_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def load_migration_chain():
+    """按 down_revision 把所有迁移串成执行顺序。
+
+    不写死文件名：T5 加了 0002，之后还会有新的。硬编码列表每加一次迁移就得
+    改一次测试，而漏改的表现是"测试通过但少跑了一个版本"。链断了直接报错。
+    """
+    modules = []
+    for path in sorted(VERSIONS_DIR.glob("*.py")):
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if hasattr(module, "revision"):
+            modules.append(module)
+
+    ordered, pending = [], list(modules)
+    while pending:
+        for module in pending:
+            parent = module.down_revision
+            if parent is None or any(done.revision == parent for done in ordered):
+                ordered.append(module)
+                pending.remove(module)
+                break
+        else:
+            raise AssertionError(
+                f"迁移链断裂，无法确定顺序：{[m.revision for m in pending]}"
+            )
+    return ordered
+
+
+def apply_migrations(connection, *, direction="upgrade"):
+    context = MigrationContext.configure(connection)
+    chain = load_migration_chain()
+    if direction == "downgrade":
+        chain = list(reversed(chain))
+    for module in chain:
+        module.op = Operations(context)
+        getattr(module, direction)()
 
 
 class ModelSchemaTests(unittest.TestCase):
@@ -68,17 +99,12 @@ class ModelSchemaTests(unittest.TestCase):
         def _enable_foreign_keys(dbapi_connection, _record):
             dbapi_connection.execute("PRAGMA foreign_keys=ON")
 
-        self.migration = load_migration()
-
     def tearDown(self):
         self.engine.dispose()
 
     def _run(self, direction):
         with self.engine.begin() as connection:
-            context = MigrationContext.configure(connection)
-            # 迁移模块里的 op 是模块级全局；换成绑定到本连接的 Operations。
-            self.migration.op = Operations(context)
-            getattr(self.migration, direction)()
+            apply_migrations(connection, direction=direction)
 
     def test_migration_matches_model_metadata(self):
         """迁移建出来的 schema 与 models.py 的 metadata 之间不能有任何差异。
@@ -128,11 +154,8 @@ class ModelBehaviourTests(unittest.TestCase):
         def _enable_foreign_keys(dbapi_connection, _record):
             dbapi_connection.execute("PRAGMA foreign_keys=ON")
 
-        migration = load_migration()
         with self.engine.begin() as connection:
-            context = MigrationContext.configure(connection)
-            migration.op = Operations(context)
-            migration.upgrade()
+            apply_migrations(connection)
 
     def tearDown(self):
         self.engine.dispose()

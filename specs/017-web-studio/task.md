@@ -103,6 +103,12 @@
 
 ## T5: 实现认证、Token 和工作区角色
 
+**进度（2026-09-22）：** 注册、登录、刷新、退出、当前用户五条接口与 `require_workspace_role` 角色依赖已落地，`tests/server/test_auth.py` **21 项**通过，全仓 **495 项**通过（跑在真实 SQLite 文件上，先执行全量迁移链再接入应用）。
+
+实际交付比 Files 多两处：`huicode/server/api/errors.py`（稳定错误码 `ApiError` 与 `error_response`）、`migrations/versions/0002_auth_tokens.py`（`refresh_tokens` 表）。**plan.md 需要回填两处**：数据模型一节补 `RefreshToken`（T4 的十一张表里没有它），API contracts 一节补 `POST /api/auth/refresh`（task.md 步骤 3 要求刷新接口，plan 只列了 register/login/logout/me）。
+
+过程中测出三个真实问题，详见 [学习记录](../../docs/web-studio-learning/T05-authentication.md)：SQLite 不保存时区导致 naive/aware 比较抛异常（T4 记录中"SQLite 时区行为不同"的保留首次应验，PostgreSQL 上不出现）；**请求级事务在异常时回滚，使"先撤销刷新令牌链再抛 401"的写法静默失效**；密码策略异常逃逸成 500。第一条促成了 `db/base.py` 的 `as_utc()` 约定。
+
 **Files:** `huicode/server/auth/passwords.py`, `huicode/server/auth/tokens.py`, `huicode/server/auth/dependencies.py`, `huicode/server/auth/permissions.py`, `huicode/server/api/auth.py`
 
 **Dependencies:** T4

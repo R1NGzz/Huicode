@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
+from huicode.server.api.auth import router as auth_router
+from huicode.server.api.errors import ApiError
 from huicode.server.api.health import router
 from huicode.server.config import ServerSettings, load_server_settings
 from huicode.server.health import DependencyHealth
@@ -75,6 +77,9 @@ def create_app(settings: ServerSettings | None = None, *, health_factory=Depende
         health = health_factory(settings)
         app.state.health = health
         await health.open()
+        # 业务路由通过 app.state.database 取连接池，而不是自己再建一个。
+        # health_factory 可被测试替换，替换品不一定持有 database，故用 getattr。
+        app.state.database = getattr(health, "database", None)
         try:
             yield
         finally:
@@ -83,6 +88,17 @@ def create_app(settings: ServerSettings | None = None, *, health_factory=Depende
     app = FastAPI(title="HuiCode Studio", debug=False, lifespan=lifespan)
     app.state.settings = settings
     logger.setLevel(settings.log_level)
+
+    @app.exception_handler(ApiError)
+    async def api_error(request: Request, exc: ApiError):
+        # ApiError 的 message 是写给用户的，不含内部细节；异常原文不进响应。
+        return JSONResponse(
+            status_code=exc.status_code, headers=exc.headers,
+            content={
+                "error": {"code": exc.code, "message": exc.message},
+                "request_id": request.state.request_id,
+            },
+        )
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
@@ -99,6 +115,7 @@ def create_app(settings: ServerSettings | None = None, *, health_factory=Depende
         })
 
     app.include_router(router)
+    app.include_router(auth_router)
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         CORSMiddleware, allow_origins=list(settings.cors_origins),
