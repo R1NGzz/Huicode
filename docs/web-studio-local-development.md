@@ -1,6 +1,6 @@
 # Web Studio 开发环境
 
-当前进度：T1 配置与旧配置回归、T2 API 测试及真实 Uvicorn 离线依赖场景已通过。Worker 尚未实现，当前就绪探测只覆盖 PostgreSQL 与 Redis，不代表完整任务执行系统就绪。真实依赖在线验证留待数据库阶段。
+当前进度：T1–T5 已完成（配置边界、API 骨架、数据库基础设施、核心数据模型与迁移、认证与工作区角色），全仓 495 项测试通过。Worker 尚未实现，当前就绪探测只覆盖 PostgreSQL 与 Redis，不代表完整任务执行系统就绪。真实 PostgreSQL 与 Redis 的在线验证已具备条件，见下面「依赖容器」与「集成测试」两节。
 
 ## 安装
 
@@ -14,6 +14,46 @@ Set-Location 'C:\Users\Administrator\Documents\Huicode'
 ```
 
 如果安装显示找不到 setuptools 等基础包，先检查包源可达性和 pip 配置，不能把它当作应用测试失败。此次排查确认曾错误使用 `https://pypi.org` 作为索引，导致请求 `/setuptools/` 返回 404；pip 的索引应使用 `https://pypi.org/simple`。安装成功后再运行后续步骤。
+
+## 依赖容器
+
+本地开发用两个容器提供 PostgreSQL 和 Redis。首次执行需要拉取镜像，之后直接启动。
+
+```powershell
+docker run -d --name huicode-pg-dev `
+  -e POSTGRES_USER=huicode -e POSTGRES_PASSWORD=huicode-dev-password -e POSTGRES_DB=huicode `
+  -p 5432:5432 postgres:18-alpine
+
+docker run -d --name huicode-redis-dev -p 6379:6379 redis:7-alpine
+```
+
+确认依赖就绪：
+
+```powershell
+docker exec huicode-pg-dev pg_isready -U huicode -d huicode
+docker exec huicode-redis-dev redis-cli ping
+```
+
+Docker Desktop 未运行时 `docker` 命令会报命名管道不存在，先启动 Docker Desktop 再执行。
+不再需要时删除容器（容器内数据一并丢失，本阶段它只用于开发）：
+
+```powershell
+docker rm -f huicode-pg-dev huicode-redis-dev
+```
+
+这里的用户名和密码是公开的本地开发值，**不要用于任何共享或部署环境**。
+
+## 集成测试
+
+`tests/integration/` 下的用例需要上面两个容器，默认跳过，所以没有环境的机器上
+`pytest tests` 不会因此失败。设置环境变量后启用：
+
+```powershell
+$env:HUICODE_TEST_DATABASE_URL = 'postgresql+asyncpg://huicode:huicode-dev-password@localhost:5432/huicode'
+.\.venv\Scripts\python.exe -m pytest tests/integration -v
+```
+
+这些用例会**清空并重建 public schema**（先降级到 base），不要指向任何有数据的库。
 
 ## 启动 API
 

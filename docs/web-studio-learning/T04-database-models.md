@@ -144,14 +144,44 @@ $env:HUICODE_DATABASE_URL="postgresql+asyncpg://u:p@localhost:5432/huicode"
   `id UUID NOT NULL`、`created_at TIMESTAMP WITH TIME ZONE NOT NULL`、`metadata JSON NOT NULL`、
   `is_active BOOLEAN NOT NULL`。这一点很重要：说明迁移不是按 SQLite 的类型生成的。
 
+```powershell
+# 4. 在真实 PostgreSQL 上执行升级 / 降级（2026-09-22 补做）
+docker run -d --name huicode-pg-dev -e POSTGRES_USER=huicode `
+  -e POSTGRES_PASSWORD=huicode-dev-password -e POSTGRES_DB=huicode `
+  -p 5432:5432 postgres:18-alpine
+$env:HUICODE_DATABASE_URL="postgresql+asyncpg://huicode:huicode-dev-password@localhost:5432/huicode"
+.\.venv\Scripts\alembic.exe upgrade head
+.\.venv\Scripts\alembic.exe current
+.\.venv\Scripts\alembic.exe downgrade base
+.\.venv\Scripts\alembic.exe upgrade head
+```
+
+- 预期：升级后 12 张业务表 + `alembic_version` 全部存在；`current` 显示 head；
+  降级后只剩 `alembic_version`；再升级恢复全部表。
+- 实际：全部符合。表数 13 → 降级后 1 → 再升级 13。
+  列类型经 `information_schema` 确认：`id` 为 `uuid`、时间字段为
+  `timestamp with time zone`、`is_active` 为 `boolean`。
+  唯一约束与索引（`uq_session_events_session_id_sequence`、
+  `uq_runs_session_id_idempotency_key`、`ix_sessions_workspace_id_updated_at`、
+  `ix_runs_status_lease_expires_at`）均存在且名字正确。
+- 这一轮已固化为 `tests/integration/test_postgres_migrations.py`（5 项，默认跳过，
+  设 `HUICODE_TEST_DATABASE_URL` 后启用）。
+
+**关于 `payload` 是 `json` 而不是 `jsonb`**：真库确认了 SQLAlchemy 的 `sa.JSON` 在
+PostgreSQL 上映射为 `json`（保留原始文本、不可建 GIN 索引、无去重）。本文写作时
+把这列为"需要在有 PG 实例后重验"的问题，现在答案是明确的：**当前是 `json`**。
+事件 payload 将来若要按内容检索（例如按 `tool_call_id` 查会话事件），需要改成
+`postgresql.JSONB`。这是一个**尚未决定的取舍**，不是已知缺陷——
+现阶段没有任何查询按 payload 内容过滤，所以 `json` 够用。
+
 **未覆盖场景与残余风险：**
 
-- **从未在真实 PostgreSQL 上执行过 upgrade / downgrade。** 测试跑的是 SQLite。
-  SQLite 没有真正的并发锁、隔离级别语义不同、时区行为也不同（它不保留 tzinfo）。
-  `TIMESTAMP WITH TIME ZONE` 的实际往返、以及 `JSON` 在 PG 上是否应改为 `JSONB`，
-  都必须在有 PG 实例后重验。
-- `compare_metadata` 的「0 差异」是在 SQLite 上比较的。它能抓住列名、索引、约束的漏抄，
-  但不能证明类型选择在 PostgreSQL 上正确。
+- **真实 PostgreSQL 上的 upgrade / downgrade 已于 2026-09-22 补做并通过**（见验证证据第 4 条），
+  同时固化为 `tests/integration/test_postgres_migrations.py`。**但本文其余各节列出的
+  行为性测试（提交、回滚、取消回滚、约束拒绝、外键强制）仍然只跑在 SQLite 上**——
+  真库只覆盖了"迁移能否执行"和"建出来的结构对不对"。
+- `compare_metadata` 的「0 差异」是在 SQLite 上比较的。它能抓住列名、索引、约束的漏抄；
+  PostgreSQL 上的类型正确性由验证证据第 4 条的 `information_schema` 查询单独覆盖。
 - 冗余的 `workspace_id` 与父行的一致性目前**只靠约定**，没有任何约束或触发器保证；
   要等 T6 的 service 层落地后才有测试。
 - `users.email` 的唯一约束区分大小写。`Alice@x.com` 与 `alice@x.com` 会是两个账号。

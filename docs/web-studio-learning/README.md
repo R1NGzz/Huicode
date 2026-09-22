@@ -55,5 +55,5 @@
 | [T1 服务端配置](./T01-server-configuration.md) | 依赖安装及新旧配置回归通过 | 正确包源索引、验证证据与自测问题 |
 | [T2 API 生命周期](./T02-api-lifecycle.md) | 配置/API 31 项、CLI 13 项通过；真实离线 HTTP 场景通过 | 真实数据库在线及 Worker 待后续验证 |
 | [T3 数据库事务](./T03-database-transactions.md) | SQLite 事务 5 项通过；Alembic 离线入口通过 | PostgreSQL 在线验证因 Docker 引擎不可用待完成 |
-| [T4 数据模型与迁移](./T04-database-models.md) | 11 张表 + 初始迁移；迁移与模型差异为 0；全仓 474 项通过 | PostgreSQL 在线升级验证待补（同 T3 阻塞） |
+| [T4 数据模型与迁移](./T04-database-models.md) | 11 张表 + 初始迁移；迁移与模型差异为 0；**真实 PostgreSQL 上升级/降级往返通过** | 行为性测试仍只在 SQLite；`payload` 为 `json` 非 `jsonb`（待决定） |
 | [T5 认证与工作区角色](./T05-authentication.md) | 5 条认证接口 + 角色依赖 21 项通过；全仓 495 项 | 仍在 SQLite 上验证；无登录限流，access token 15 分钟内无法撤销 |
