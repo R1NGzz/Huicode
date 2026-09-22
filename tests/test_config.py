@@ -1,11 +1,138 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from huicode.config import ConfigError, load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_agent_guard_defaults_and_loads_eval_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n"
+                "agent_guard:\n"
+                "  verification_gate: true\n"
+                "  protect_test_edits: true\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertTrue(config.agent_guard.verification_gate)
+        self.assertTrue(config.agent_guard.protect_test_edits)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+
+            self.assertFalse(config.agent_guard.verification_gate)
+            self.assertFalse(config.agent_guard.protect_test_edits)
+        self.assertEqual(config.agent_guard.max_production_files, 0)
+
+    def test_agent_guard_rejects_non_boolean_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n"
+                "agent_guard:\n"
+                "  verification_gate: maybe\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "agent_guard.verification_gate"):
+                load_config(path)
+
+    def test_orchestration_defaults_and_loads_eval_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n",
+                encoding="utf-8",
+            )
+            defaults = load_config(path).orchestration
+            self.assertFalse(defaults.enabled)
+            self.assertEqual(defaults.prompt_repeat_every, 4)
+
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n"
+                "orchestration:\n"
+                "  enabled: true\n"
+                "  prompt_repeat_every: 8\n"
+                "  catalog_repeat_every: 8\n"
+                "  plan_preview_chars: 1200\n"
+                "  exploration_soft_limit: 6\n",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            self.assertTrue(config.orchestration.enabled)
+            self.assertEqual(config.orchestration.prompt_repeat_every, 8)
+            self.assertEqual(config.orchestration.catalog_repeat_every, 8)
+            self.assertEqual(config.orchestration.plan_preview_chars, 1200)
+            self.assertEqual(config.orchestration.exploration_soft_limit, 6)
+            self.assertFalse(config.orchestration.interface_closure)
+            self.assertFalse(config.orchestration.scope_audit)
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n"
+                "orchestration:\n"
+                "  interface_closure: true\n",
+                encoding="utf-8",
+            )
+            interface_config = load_config(path)
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: http://example.test\napi_key: key\n"
+                "orchestration:\n"
+                "  parallel_tool_calls: true\n",
+                encoding="utf-8",
+            )
+            parallel_config = load_config(path)
+
+            self.assertTrue(interface_config.orchestration.interface_closure)
+            self.assertFalse(interface_config.orchestration.scope_audit)
+            self.assertTrue(parallel_config.orchestration.parallel_tool_calls)
+
+    def test_loads_reasoning_effort_and_api_key_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\n"
+                "model: gpt-test\n"
+                "base_url: https://example.test/v1\n"
+                "api_key: ${HUICODE_TEST_API_KEY}\n"
+                "reasoning_effort: high\n",
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"HUICODE_TEST_API_KEY": "secret-from-env"}):
+                config = load_config(path)
+
+        self.assertEqual(config.api_key, "secret-from-env")
+        self.assertEqual(config.reasoning_effort, "high")
+
+    def test_rejects_missing_secret_environment_and_invalid_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huicode.yaml"
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: https://example.test/v1\n"
+                "api_key: ${HUICODE_MISSING_API_KEY}\n",
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {}, clear=True):
+                with self.assertRaisesRegex(ConfigError, "HUICODE_MISSING_API_KEY"):
+                    load_config(path)
+
+            path.write_text(
+                "protocol: openai\nmodel: test\nbase_url: https://example.test/v1\n"
+                "api_key: key\nreasoning_effort: extreme\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "reasoning_effort"):
+                load_config(path)
+
     def test_worktree_defaults_full_config_and_path_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

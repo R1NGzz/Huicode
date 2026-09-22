@@ -31,11 +31,13 @@ class OpenAIProvider:
         }
         if tools and allow_tool_calls:
             payload["tools"] = [_serialize_tool(tool) for tool in tools]
-            payload["parallel_tool_calls"] = False
+            payload["parallel_tool_calls"] = self.config.orchestration.parallel_tool_calls
         elif not allow_tool_calls:
             payload["tool_choice"] = "none"
         if self.config.temperature is not None:
             payload["temperature"] = self.config.temperature
+        if self.config.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.config.reasoning_effort
 
         tool_buffers: dict[int, dict[str, str]] = {}
         for event in post_sse(

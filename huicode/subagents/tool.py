@@ -11,7 +11,10 @@ from .types import SubagentLaunchRequest
 class AgentTool:
     name = "Agent"
     description = (
-        "把独立子任务委派给定义式或 Fork 式子 Agent。定义式需要 role；Fork 继承父历史并强制后台。"
+        "把独立子任务委派给定义式或 Fork 式子 Agent。\n"
+        '合法定义式：{"type":"defined","task":"...","role":"角色名","background":false}；'
+        '合法 Fork 式：{"type":"fork","task":"..."}。\n'
+        "defined 必须有 catalog 中的 role；fork 不得提供 role，并且始终后台运行。"
     )
     side_effect = True
     parameters = {
@@ -36,20 +39,42 @@ class AgentTool:
         role = args.get("role")
         background = args.get("background", False)
         if kind not in {"defined", "fork"}:
-            return ToolResult.failure("invalid_request", "type 只允许 defined 或 fork")
+            return ToolResult.failure(
+                "invalid_request",
+                "type 只允许 defined 或 fork",
+                {
+                    "allowed_types": ["defined", "fork"],
+                    "examples": [
+                        {"type": "defined", "task": "检查调用链", "role": "worker"},
+                        {"type": "fork", "task": "独立检查测试失败"},
+                    ],
+                },
+            )
         if not isinstance(task_text, str) or not task_text.strip():
             return ToolResult.failure("invalid_request", "task 必须是非空字符串")
         if not isinstance(background, bool):
-            return ToolResult.failure("invalid_request", "background 必须是布尔值")
+            return ToolResult.failure(
+                "invalid_request",
+                "background 必须是布尔值",
+                {"field": "background", "expected": "boolean"},
+            )
         if kind == "defined":
             if not isinstance(role, str) or not role.strip():
-                return ToolResult.failure("invalid_request", "defined 类型必须提供 role")
+                return ToolResult.failure(
+                    "invalid_request",
+                    "defined 类型必须提供 role",
+                    {"required": ["type", "task", "role"], "example": {"type": "defined", "task": "检查调用链", "role": "worker"}},
+                )
             if self.manager.catalog.get(role) is None:
                 return ToolResult.failure("unknown_role", f"未知子 Agent 角色: {role}")
             normalized_role: str | None = role.strip().lower()
         else:
             if role is not None:
-                return ToolResult.failure("invalid_request", "fork 类型不得提供 role")
+                return ToolResult.failure(
+                    "invalid_request",
+                    "fork 类型不得提供 role",
+                    {"forbidden": ["role"], "example": {"type": "fork", "task": "独立检查测试失败"}},
+                )
             normalized_role = None
             background = True
         parent = self.manager.parent_snapshot()

@@ -20,6 +20,13 @@ class AgentEventTests(unittest.TestCase):
         self.assertFalse(state.cancel_requested)
         self.assertEqual(state.unknown_tool_count, 0)
         self.assertEqual(state.iterations, 0)
+        self.assertEqual(state.read_only_tool_calls, 0)
+        self.assertEqual(state.production_edit_count, 0)
+        self.assertEqual(state.last_production_edit_iteration, 0)
+        self.assertEqual(state.last_verification_iteration, 0)
+        self.assertEqual(state.changed_production_paths, ())
+        self.assertEqual(state.verification_failures, 0)
+        self.assertEqual(state.last_verification_failure, "")
         self.assertEqual(batch.parallel_read_calls, [])
         self.assertEqual(batch.serial_calls, [])
 

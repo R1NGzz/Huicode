@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -88,6 +89,18 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("HUICODE_CONFIG", str(Path.home() / ".huicode.yaml")),
         help="YAML 配置文件路径，默认读取 HUICODE_CONFIG 或 ~/.huicode.yaml",
     )
+    parser.add_argument(
+        "-p",
+        "--prompt",
+        default=None,
+        help="非交互执行一条任务；传入后不会进入交互输入循环",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=("text", "stream-json"),
+        default="text",
+        help="输出格式；stream-json 为每个 Agent 事件输出一行 JSON",
+    )
     parser.add_argument("--team-worker", default="", help=argparse.SUPPRESS)
     parser.add_argument("--member-id", default="", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -101,7 +114,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.team_worker:
         return _run_team_worker(provider, config, Path(args.team_worker), args.member_id)
-    return _run_chat(provider, config, config_path=args.config)
+    return _run_chat(
+        provider,
+        config,
+        config_path=args.config,
+        initial_prompt=args.prompt,
+        output_format=args.output_format,
+    )
 
 
 def _run_chat(
@@ -110,6 +129,8 @@ def _run_chat(
     mcp_transport_factory=None,
     command_registry_factory=None,
     config_path: str = "",
+    initial_prompt: str | None = None,
+    output_format: str = "text",
 ) -> int:
     workspace = Path.cwd()
     try:
@@ -391,8 +412,8 @@ def _run_chat(
         SkillTool(skill_manager, state.skills, isolated_runner=run_isolated_skill),
         system=True,
     )
-    initial_options = AgentOptions()
-    initial_prompt = build_agent_prompt(
+    initial_options = AgentOptions(max_iterations=config.max_iterations)
+    initial_agent_prompt = build_agent_prompt(
         context=tool_context,
         registry=tool_registry,
         state=state,
@@ -401,12 +422,13 @@ def _run_chat(
         skill_manager=skill_manager,
         hook_manager=hook_manager,
         subagent_manager=subagent_manager,
+        config=config,
     )
     initial_tools = select_tools(tool_registry, initial_options, state, skill_manager)
     subagent_manager.capture_parent(
         ParentAgentSnapshot(
             messages=tuple(deepcopy(state.messages)),
-            prompt=initial_prompt,
+            prompt=initial_agent_prompt,
             visible_tools=tuple(tool.name for tool in initial_tools),
             mode="chat",
             permissions=PermissionSnapshot(
@@ -450,44 +472,77 @@ def _run_chat(
             name="huicode-team-notifications",
             daemon=True,
         ).start()
-    if mcp_manager is not None and mcp_manager.server_count:
+    if output_format != "stream-json":
+        if mcp_manager is not None and mcp_manager.server_count:
+            print(
+                f"MCP servers={mcp_manager.active_server_count}/{mcp_manager.server_count} "
+                f"tools={mcp_manager.tool_count} errors={len(mcp_manager.errors)}"
+            )
+            for error in mcp_manager.errors:
+                print(f"MCP server {error.server} skipped: {error.message}")
         print(
-            f"MCP servers={mcp_manager.active_server_count}/{mcp_manager.server_count} "
-            f"tools={mcp_manager.tool_count} errors={len(mcp_manager.errors)}"
+            "Skills "
+            f"effective={len(skill_snapshot.definitions)} "
+            f"overridden={skill_snapshot.overridden_count} "
+            f"skipped={skill_snapshot.skipped_count} "
+            f"warnings={len(skill_snapshot.warnings)}"
         )
-        for error in mcp_manager.errors:
-            print(f"MCP server {error.server} skipped: {error.message}")
-    print(
-        "Skills "
-        f"effective={len(skill_snapshot.definitions)} "
-        f"overridden={skill_snapshot.overridden_count} "
-        f"skipped={skill_snapshot.skipped_count} "
-        f"warnings={len(skill_snapshot.warnings)}"
-    )
-    for warning in skill_snapshot.warnings:
-        print(f"Skill warning: {warning.display()}")
-    agent_sources = ",".join(
-        f"{source}={count}" for source, count in sorted(agent_snapshot.source_counts.items())
-    ) or "none"
-    print(
-        f"Agents effective={len(agent_snapshot.definitions)} "
-        f"overridden={agent_snapshot.overridden_count} skipped={agent_snapshot.skipped_count} "
-        f"sources={agent_sources}"
-    )
-    for warning in agent_snapshot.warnings:
-        print(f"Agent warning: {warning.display()}")
-    hook_status = hook_manager.summary()
-    hook_sources = ",".join(
-        f"{source}={count}" for source, count in sorted(hook_status.source_counts.items())
-    ) or "none"
-    print(
-        f"Hooks effective={hook_status.effective} disabled={hook_status.disabled} "
-        f"sources={hook_sources}"
-    )
-    team_state = "enabled" if team_manager is not None else "disabled"
-    print(f"Team {team_state} backend={config.teams.default_backend}")
-    print(f"HuiCode 已连接: {provider.name}:{provider.model}")
-    print("输入 /help 查看命令；/plan 进入计划模式，/do 返回默认模式。")
+        for warning in skill_snapshot.warnings:
+            print(f"Skill warning: {warning.display()}")
+        agent_sources = ",".join(
+            f"{source}={count}" for source, count in sorted(agent_snapshot.source_counts.items())
+        ) or "none"
+        print(
+            f"Agents effective={len(agent_snapshot.definitions)} "
+            f"overridden={agent_snapshot.overridden_count} skipped={agent_snapshot.skipped_count} "
+            f"sources={agent_sources}"
+        )
+        for warning in agent_snapshot.warnings:
+            print(f"Agent warning: {warning.display()}")
+        hook_status = hook_manager.summary()
+        hook_sources = ",".join(
+            f"{source}={count}" for source, count in sorted(hook_status.source_counts.items())
+        ) or "none"
+        print(
+            f"Hooks effective={hook_status.effective} disabled={hook_status.disabled} "
+            f"sources={hook_sources}"
+        )
+        team_state = "enabled" if team_manager is not None else "disabled"
+        print(f"Team {team_state} backend={config.teams.default_backend}")
+        print(f"HuiCode 已连接: {provider.name}:{provider.model}")
+        print("输入 /help 查看命令；/plan 进入计划模式，/do 返回默认模式。")
+
+    if initial_prompt is not None:
+        _run_request(
+            provider=provider,
+            registry=_team_scoped_registry(tool_registry, team_manager, config),
+            tool_context=tool_context,
+            state=state,
+            user_text=initial_prompt,
+            config=config,
+            mode="chat",
+            show_usage=config.show_usage,
+            memory_manager=memory_manager,
+            skill_manager=skill_manager,
+            context_manager=context_manager,
+            hook_manager=hook_manager,
+            subagent_manager=subagent_manager,
+            team_manager=team_manager,
+            output_format=output_format,
+        )
+        return _close_resources_and_return(
+            mcp_manager,
+            memory_manager,
+            0,
+            hook_manager=hook_manager,
+            state=state,
+            mode="chat",
+            reason="noninteractive",
+            subagent_manager=subagent_manager,
+            notification_stop=notification_stop,
+            worktree_cleanup=worktree_cleanup,
+            team_manager=team_manager,
+        )
 
     last_reload_error = ""
     while True:
@@ -677,8 +732,9 @@ def _run_request(
     hook_manager: HookManager | None = None,
     subagent_manager: SubagentManager | None = None,
     team_manager: TeamManager | None = None,
+    output_format: str = "text",
 ) -> None:
-    options = AgentOptions(mode=mode)
+    options = AgentOptions(max_iterations=config.max_iterations, mode=mode)
     last_user_count = len(state.messages)
     team_block = ()
     if team_manager is not None and team_manager.team is not None:
@@ -712,10 +768,32 @@ def _run_request(
             continue
         if event.kind == "usage" and not show_usage:
             continue
-        render_agent_event(event, sys.stdout)
+        if output_format == "stream-json":
+            print(json.dumps(_agent_event_payload(event), ensure_ascii=False, default=str), flush=True)
+        else:
+            render_agent_event(event, sys.stdout)
         if event.kind == "done" and event.stop_reason in {"cancelled", "error"} and len(state.messages) > last_user_count:
             if state.messages and state.messages[-1].role == "user":
                 state.messages.pop()
+
+
+def _agent_event_payload(event) -> dict[str, object]:  # noqa: ANN001
+    payload: dict[str, object] = {
+        "kind": event.kind,
+        "text": event.text,
+        "iteration": event.iteration,
+        "stop_reason": event.stop_reason,
+        "data": event.data,
+    }
+    if event.tool_call is not None:
+        payload["tool_call"] = {
+            "id": event.tool_call.id,
+            "name": event.tool_call.name,
+            "arguments": event.tool_call.arguments,
+        }
+    if event.tool_result is not None:
+        payload["tool_result"] = event.tool_result.to_model_dict()
+    return payload
 
 
 def _subagent_notification_pump(

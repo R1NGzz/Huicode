@@ -9,16 +9,25 @@ import sys
 import uuid
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, TextIO
 
+from huicode.agent_guard import is_production_source_path, is_verification_command, normalized_path
 from huicode.context import ContextLifecycleCallbacks, ContextManager, TokenEstimate
 from huicode.agent_events import AgentEvent, AgentOptions, AgentState, CollectedResponse, ToolBatch
 from huicode.config import LLMConfig
 from huicode.hooks import HookManager
 from huicode.hooks.events import context_data, error_data, make_event, message_data, tool_data
-from huicode.prompts import PromptBundle, PromptContext, build_prompt_bundle, enhance_tool_specs, normalize_cache_usage
+from huicode.prompts import (
+    PromptBundle,
+    PromptContext,
+    PromptInjectionPolicy,
+    build_prompt_bundle,
+    enhance_tool_specs,
+    normalize_cache_usage,
+)
 from huicode.providers.base import ConversationMessage, Provider, ToolCall
 from huicode.sse import APIError
 from huicode.skills.manager import SkillManager
@@ -41,6 +50,21 @@ class AgentPromptOverrides:
     ) -> None:
         self.role_instruction_blocks = role_instruction_blocks
         self.stable_modules = stable_modules
+
+
+def prompt_injection_policy(config: LLMConfig | None = None) -> PromptInjectionPolicy:
+    """Return the prompt cadence configured for the current run."""
+    if config is None or not config.orchestration.enabled:
+        return PromptInjectionPolicy()
+    settings = config.orchestration
+    return PromptInjectionPolicy(
+        repeat_every=settings.prompt_repeat_every,
+        catalog_repeat_every=settings.catalog_repeat_every,
+        plan_preview_chars=settings.plan_preview_chars,
+        exploration_soft_limit=settings.exploration_soft_limit,
+        interface_closure=settings.interface_closure,
+        scope_audit=settings.scope_audit,
+    )
 
 
 def run_agent_turn(
@@ -91,6 +115,8 @@ def run_agent_loop(
     subagent_manager: "SubagentManager | None" = None,
     prompt_overrides: AgentPromptOverrides | None = None,
 ) -> Iterator[AgentEvent]:
+    if config.agent_guard.protect_test_edits and not context.protect_test_edits:
+        context = replace(context, protect_test_edits=True)
     done_reason = ""
     try:
         for event in _run_agent_loop_impl(
@@ -155,9 +181,18 @@ def _run_agent_loop_impl(
     subagent_manager: "SubagentManager | None" = None,
     prompt_overrides: AgentPromptOverrides | None = None,
 ) -> Iterator[AgentEvent]:
+    if state.pending_verification and state.verification_due_iteration > 0:
+        state.verification_due_iteration = 0
     state.cancel_requested = False
     state.iterations = 0
     state.unknown_tool_count = 0
+    state.read_only_tool_calls = 0
+    state.production_edit_count = 0
+    state.last_production_edit_iteration = 0
+    state.last_verification_iteration = 0
+    state.changed_production_paths = ()
+    state.verification_failures = 0
+    state.last_verification_failure = ""
     empty_response_count = 0
     override_providers: dict[str, Provider] = {}
     context_manager = context_manager or ContextManager(context.workspace, config.context)
@@ -204,6 +239,14 @@ def _run_agent_loop_impl(
                 "stage": "assistant_turn_start",
                 "mode": options.mode,
                 "permission_mode": context.permissions.mode if context.permissions else "disabled",
+                "orchestration": {
+                    "read_only_tool_calls": state.read_only_tool_calls,
+                    "production_edit_count": state.production_edit_count,
+                    "last_production_edit_iteration": state.last_production_edit_iteration,
+                    "last_verification_iteration": state.last_verification_iteration,
+                    "changed_production_paths": list(state.changed_production_paths),
+                    "verification_failures": state.verification_failures,
+                },
             },
         )
         lease = None
@@ -231,6 +274,7 @@ def _run_agent_loop_impl(
                 subagent_manager=subagent_manager if agent_scope == "main" else None,
                 prompt_overrides=prompt_overrides,
                 subagent_result_blocks=result_blocks,
+                config=config,
             )
             selected_tools = select_tools(registry, options, state, skill_manager)
             preparation = context_manager.prepare_before_request(
@@ -268,6 +312,7 @@ def _run_agent_loop_impl(
                     subagent_manager=subagent_manager if agent_scope == "main" else None,
                     prompt_overrides=prompt_overrides,
                     subagent_result_blocks=result_blocks,
+                    config=config,
                 )
             if agent_scope == "main" and subagent_manager is not None:
                 from huicode.permissions import clone_permission_context
@@ -397,6 +442,14 @@ def _run_agent_loop_impl(
             state.unknown_tool_count = 0
             if options.mode == "plan" and response.text:
                 state.last_plan = response.text
+            if config.agent_guard.verification_gate and state.pending_verification and options.mode != "plan":
+                state.messages.append(
+                    ConversationMessage(
+                        role="user",
+                        content=_verification_required_retry_prompt(state),
+                    )
+                )
+                continue
             if memory is not None:
                 report = memory.schedule_update_after_final(state, options.mode, turn_start)
                 if report.message and not report.noop:
@@ -415,6 +468,8 @@ def _run_agent_loop_impl(
             memory,
             hook_manager,
             agent_scope,
+            verification_gate=config.agent_guard.verification_gate,
+            max_production_files=config.agent_guard.max_production_files,
         )
         if _all_unknown_tool_results(outcomes):
             state.unknown_tool_count += len(outcomes)
@@ -526,8 +581,10 @@ def build_agent_prompt(
     subagent_manager: "SubagentManager | None" = None,
     prompt_overrides: AgentPromptOverrides | None = None,
     subagent_result_blocks: tuple[str, ...] = (),
+    config: LLMConfig | None = None,
 ) -> PromptBundle:
     selected_tools = select_tools(registry, options, state, skill_manager)
+    policy = prompt_injection_policy(config)
     prompt_context = PromptContext(
         workspace=context.workspace,
         platform=platform.platform(),
@@ -557,11 +614,22 @@ def build_agent_prompt(
             prompt_overrides.role_instruction_blocks if prompt_overrides is not None else ()
         ),
         subagent_result_blocks=subagent_result_blocks,
+        verification_required=state.pending_verification,
+        verification_paths=state.pending_verification_paths,
+        verification_status=state.last_verification,
+        read_only_tool_calls=state.read_only_tool_calls,
+        production_edit_count=state.production_edit_count,
+        last_production_edit_iteration=state.last_production_edit_iteration,
+        last_verification_iteration=state.last_verification_iteration,
+        exploration_soft_limit=policy.exploration_soft_limit,
+        changed_production_paths=state.changed_production_paths,
+        verification_failures=state.verification_failures,
+        last_verification_failure=state.last_verification_failure,
         stable_modules_override=(
             prompt_overrides.stable_modules if prompt_overrides is not None else None
         ),
     )
-    return build_prompt_bundle(prompt_context)
+    return build_prompt_bundle(prompt_context, policy)
 
 
 def _subagent_result_blocks(results) -> tuple[str, ...]:  # noqa: ANN001
@@ -629,6 +697,8 @@ def execute_tool_batches(
     memory=None,
     hook_manager: HookManager | None = None,
     agent_scope: str = "main",
+    verification_gate: bool = False,
+    max_production_files: int = 0,
 ) -> Iterator[AgentEvent]:
     options = options or AgentOptions()
     batch = batch_tool_calls(calls, registry)
@@ -643,6 +713,17 @@ def execute_tool_batches(
             result_sources: list[str] = ["tool"] * len(batch.parallel_read_calls)
             futures = []
             for index, call in enumerate(batch.parallel_read_calls):
+                denied = _verification_tool_denial(
+                    state,
+                    registry,
+                    call,
+                    iteration,
+                    verification_gate,
+                )
+                if denied is not None:
+                    results[index] = denied
+                    result_sources[index] = "verification"
+                    continue
                 denied = _hook_tool_denial(
                     hook_manager,
                     context,
@@ -681,6 +762,9 @@ def execute_tool_batches(
                 options,
                 agent_scope,
             )
+            _update_orchestration_state(state, registry, call, result, iteration)
+            if verification_gate:
+                _update_verification_state(state, registry, call, result)
             context_report = None
             if context_manager is not None:
                 result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
@@ -696,15 +780,34 @@ def execute_tool_batches(
     for call in batch.serial_calls:
         yield AgentEvent(kind="tool_call", tool_call=call, iteration=iteration)
         source = "hook"
-        result = _hook_tool_denial(
-            hook_manager,
-            context,
+        result = _verification_tool_denial(
             state,
+            registry,
             call,
             iteration,
-            options,
-            agent_scope,
+            verification_gate,
         )
+        if result is not None:
+            source = "verification"
+        if result is None:
+            result = _production_scope_denial(
+                state,
+                registry,
+                call,
+                max_production_files,
+            )
+            if result is not None:
+                source = "scope"
+        if result is None:
+            result = _hook_tool_denial(
+                hook_manager,
+                context,
+                state,
+                call,
+                iteration,
+                options,
+                agent_scope,
+            )
         if result is None:
             source = "plan"
             result = _plan_mode_denial(registry, call, options)
@@ -723,6 +826,9 @@ def execute_tool_batches(
             options,
             agent_scope,
         )
+        _update_orchestration_state(state, registry, call, result, iteration)
+        if verification_gate:
+            _update_verification_state(state, registry, call, result)
         context_report = None
         if context_manager is not None:
             result, context_report = context_manager.compact_tool_result(call, result, context, iteration)
@@ -736,6 +842,38 @@ def execute_tool_batches(
             yield AgentEvent(kind="context", iteration=iteration, data=context_report.to_dict())
 
     return outcomes
+
+
+def _production_scope_denial(
+    state: AgentState,
+    registry: ToolRegistry,
+    call: ToolCall,
+    max_production_files: int,
+) -> ToolResult | None:
+    """Keep an evaluation run from expanding a patch past its configured file budget."""
+    if max_production_files <= 0:
+        return None
+    resolved_name = registry.resolve_name(call.name) or call.name
+    if resolved_name not in {"Edit", "Write"}:
+        return None
+    arguments = call.arguments if isinstance(call.arguments, dict) else {}
+    path = arguments.get("path")
+    if not is_production_source_path(path):
+        return None
+    normalized = normalized_path(path)
+    if not normalized or normalized in state.changed_production_paths:
+        return None
+    if len(state.changed_production_paths) < max_production_files:
+        return None
+    return ToolResult.failure(
+        "production_scope_limit",
+        "评测范围保护阻止新增生产文件；请在现有改动文件中完成最小修复并先检查 diff。",
+        {
+            "path": normalized,
+            "max_production_files": max_production_files,
+            "changed_production_paths": list(state.changed_production_paths),
+        },
+    )
 
 
 def _plan_mode_denial(registry: ToolRegistry, call: ToolCall, options: AgentOptions) -> ToolResult | None:
@@ -770,6 +908,110 @@ def _tool_message(call: ToolCall, result: ToolResult) -> ConversationMessage:
         tool_result=result,
     )
 
+
+def _update_orchestration_state(
+    state: AgentState,
+    registry,
+    call: ToolCall,
+    result: ToolResult,
+    iteration: int,
+) -> None:  # noqa: ANN001
+    """Record cheap progress counters used by the long-task prompt."""
+    resolved_name = registry.resolve_name(call.name) or call.name
+    if resolved_name in {"Read", "Find", "Search", "Glob"}:
+        state.read_only_tool_calls += 1
+
+    arguments = call.arguments if isinstance(call.arguments, dict) else {}
+    if result.ok and resolved_name in {"Edit", "Write"}:
+        path = arguments.get("path")
+        if is_production_source_path(path):
+            state.production_edit_count += 1
+            state.read_only_tool_calls = 0
+            state.last_production_edit_iteration = iteration
+            normalized = normalized_path(path)
+            if normalized and normalized not in state.changed_production_paths:
+                state.changed_production_paths = (*state.changed_production_paths, normalized)[-12:]
+        return
+
+    if resolved_name == "Bash" and is_verification_command(arguments.get("command")):
+        if result.ok:
+            state.last_verification_iteration = iteration
+            state.last_verification_failure = ""
+        else:
+            state.verification_failures += 1
+            state.last_verification_failure = result.summary.strip().replace("\n", " ")[:240]
+
+
+def _update_verification_state(state: AgentState, registry, call: ToolCall, result: ToolResult) -> None:  # noqa: ANN001
+    resolved_name = registry.resolve_name(call.name) or call.name
+    arguments = call.arguments if isinstance(call.arguments, dict) else {}
+    if result.ok and resolved_name in {"Edit", "Write"}:
+        path = arguments.get("path")
+        if is_production_source_path(path):
+            paths = set(state.pending_verification_paths)
+            paths.add(str(path).replace("\\", "/"))
+            state.pending_verification = True
+            state.pending_verification_paths = tuple(sorted(paths))
+            state.last_verification = "等待运行相关测试或导入/编译检查"
+            state.verification_due_iteration = state.iterations
+        return
+
+    if resolved_name != "Bash" or not state.pending_verification:
+        return
+    command = arguments.get("command")
+    if not is_verification_command(command):
+        return
+    state.verification_attempts += 1
+    if result.ok:
+        state.pending_verification = False
+        state.pending_verification_paths = ()
+        state.last_verification = "验证命令成功"
+        state.verification_due_iteration = 0
+    else:
+        failure = result.summary.strip().replace("\n", " ")[:240]
+        state.last_verification = f"验证命令失败：{failure or '命令退出非零'}"
+        state.verification_due_iteration = 0
+
+
+def _verification_required_retry_prompt(state: AgentState) -> str:
+    paths = ", ".join(state.pending_verification_paths) if state.pending_verification_paths else "受影响生产源文件"
+    status = state.last_verification or "尚未运行验证"
+    return (
+        "运行时验证闸门暂未满足：生产代码已经修改，但不能直接结束任务。"
+        f"受影响文件：{paths}。当前状态：{status}。"
+        "下一步必须调用 Bash 运行相关测试、导入/编译检查或最小复现；"
+        "若验证失败，修复生产代码后再次验证；不要修改测试文件。"
+    )
+
+
+def _verification_tool_denial(
+    state: AgentState,
+    registry,
+    call: ToolCall,
+    iteration: int,
+    verification_gate: bool,
+) -> ToolResult | None:  # noqa: ANN001
+    if not verification_gate or not state.pending_verification:
+        return None
+    if state.verification_due_iteration <= 0 or state.verification_due_iteration >= iteration:
+        return None
+    resolved_name = registry.resolve_name(call.name) or call.name
+    arguments = call.arguments if isinstance(call.arguments, dict) else {}
+    if resolved_name == "Bash" and is_verification_command(arguments.get("command")):
+        return None
+    return ToolResult.failure(
+        "verification_required",
+        "生产代码修改后的下一轮必须先运行相关测试、导入/编译检查或最小复现",
+        {
+            "tool": call.name,
+            "allowed_tool": "Bash",
+            "paths": list(state.pending_verification_paths),
+            "status": state.last_verification,
+        },
+        summary="验证闸门已拒绝本次工具调用，请先用 Bash 完成验证",
+    )
+
+
 def _build_user_text(user_text: str, state: AgentState, options: AgentOptions) -> str:
     if options.mode != "do" or not state.last_plan:
         return user_text
@@ -787,8 +1029,8 @@ def _is_empty_response(response: CollectedResponse) -> bool:
 
 def _empty_response_retry_prompt() -> str:
     return (
-        "上一轮没有返回任何可显示内容。请不要复述本提示，也不要再次调用工具；"
-        "请直接根据已有工具结果，用中文回答用户最初的问题。"
+        "上一轮没有返回文本或工具调用。请继续执行用户最初的任务，不要复述本提示；"
+        "可以根据需要继续调用工具。若任务已完成，请直接给出最终结果。"
     )
 
 

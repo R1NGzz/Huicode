@@ -50,7 +50,7 @@ class CollectedResponse:
 class AgentOptions:
     max_iterations: int = 50
     max_unknown_tools: int = 2
-    max_empty_responses: int = 1
+    max_empty_responses: int = 3
     mode: AgentMode = "chat"
     read_only_tool_names: frozenset[str] = field(
         default_factory=lambda: frozenset({"Read", "Find", "Search", "Glob"})
@@ -68,6 +68,18 @@ class AgentState:
     cancel_requested: bool = False
     unknown_tool_count: int = 0
     iterations: int = 0
+    pending_verification: bool = False
+    pending_verification_paths: tuple[str, ...] = ()
+    verification_attempts: int = 0
+    last_verification: str = ""
+    verification_due_iteration: int = 0
+    read_only_tool_calls: int = 0
+    production_edit_count: int = 0
+    last_production_edit_iteration: int = 0
+    last_verification_iteration: int = 0
+    changed_production_paths: tuple[str, ...] = ()
+    verification_failures: int = 0
+    last_verification_failure: str = ""
 
 
 @dataclass(frozen=True)

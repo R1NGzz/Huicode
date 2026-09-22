@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 
 PromptMode = Literal["chat", "plan", "do"]
+ExecutionPhase = Literal["investigate", "implement", "verify", "finalize"]
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,11 @@ class PromptModule:
 @dataclass(frozen=True)
 class PromptInjectionPolicy:
     repeat_every: int = 4
+    catalog_repeat_every: int = 4
+    plan_preview_chars: int = 2000
+    exploration_soft_limit: int = 6
+    interface_closure: bool = False
+    scope_audit: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +68,17 @@ class PromptContext:
     agent_catalog: tuple[tuple[str, str], ...] = ()
     role_instruction_blocks: tuple[str, ...] = ()
     subagent_result_blocks: tuple[str, ...] = ()
+    verification_required: bool = False
+    verification_paths: tuple[str, ...] = ()
+    verification_status: str = ""
+    read_only_tool_calls: int = 0
+    production_edit_count: int = 0
+    last_production_edit_iteration: int = 0
+    last_verification_iteration: int = 0
+    exploration_soft_limit: int = 6
+    changed_production_paths: tuple[str, ...] = ()
+    verification_failures: int = 0
+    last_verification_failure: str = ""
     stable_modules_override: tuple[PromptModule, ...] | None = None
 
 

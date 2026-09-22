@@ -33,12 +33,15 @@ class AgentToolValidationTests(unittest.TestCase):
             manager = _manager(Path(directory))
             tool = AgentTool(manager)
             context = ToolContext(Path(directory))
-            self.assertEqual(tool.run({"type": "bad", "task": "x"}, context).error.code, "invalid_request")
-            self.assertEqual(tool.run({"type": "defined", "task": "x"}, context).error.code, "invalid_request")
-            self.assertEqual(
-                tool.run({"type": "fork", "task": "x", "role": "worker"}, context).error.code,
-                "invalid_request",
-            )
+            invalid_type = tool.run({"type": "bad", "task": "x"}, context)
+            self.assertEqual(invalid_type.error.code, "invalid_request")
+            self.assertEqual(invalid_type.error.details["allowed_types"], ["defined", "fork"])
+            missing_role = tool.run({"type": "defined", "task": "x"}, context)
+            self.assertEqual(missing_role.error.code, "invalid_request")
+            self.assertIn("role", missing_role.error.details["required"])
+            invalid_fork = tool.run({"type": "fork", "task": "x", "role": "worker"}, context)
+            self.assertEqual(invalid_fork.error.code, "invalid_request")
+            self.assertEqual(invalid_fork.error.details["forbidden"], ["role"])
             manager.close()
 
 

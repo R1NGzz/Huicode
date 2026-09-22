@@ -56,7 +56,34 @@ class FileToolTests(unittest.TestCase):
             self.assertEqual(missing.error.code, "not_found")
             self.assertFalse(multiple.ok)
             self.assertEqual(multiple.error.code, "multiple_matches")
+            self.assertEqual(multiple.error.details["locations"][0]["line"], 1)
+            self.assertEqual(multiple.error.details["locations"][1]["line"], 1)
             self.assertEqual(path.read_text(encoding="utf-8"), "one two two")
+
+    def test_protects_test_files_without_blocking_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            test_path = workspace / "tests" / "test_example.py"
+            test_path.parent.mkdir()
+            test_path.write_text("value = 1\n", encoding="utf-8")
+            context = ToolContext(workspace=workspace, protect_test_edits=True)
+
+            write_result = WriteFileTool().run(
+                {"path": "tests/test_example.py", "content": "value = 2\n"},
+                context,
+            )
+            edit_result = EditFileTool().run(
+                {"path": "tests/test_example.py", "old_text": "1", "new_text": "2"},
+                context,
+            )
+            read_result = ReadFileTool().run({"path": "tests/test_example.py"}, context)
+
+        self.assertFalse(write_result.ok)
+        self.assertEqual(write_result.error.code, "test_file_edit_denied")
+        self.assertFalse(edit_result.ok)
+        self.assertEqual(edit_result.error.code, "test_file_edit_denied")
+        self.assertTrue(read_result.ok)
+        self.assertEqual(read_result.data["content"], "value = 1\n")
 
 
 if __name__ == "__main__":

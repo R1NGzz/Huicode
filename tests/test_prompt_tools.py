@@ -24,6 +24,16 @@ class PromptToolTests(unittest.TestCase):
         self.assertIn("优先用 Find", text)
         self.assertIn("workspace 边界", text)
 
+    def test_common_rules_are_not_copied_to_every_tool(self) -> None:
+        specs = [
+            ToolSpec(name="Read", description="读取文件", parameters={}),
+            ToolSpec(name="Glob", description="找文件", parameters={}),
+        ]
+        result = enhance_tool_specs(specs)
+        self.assertNotIn("通用规则", result[0].description)
+        self.assertNotIn("通用规则", result[1].description)
+        self.assertEqual(result[1].description, "找文件")
+
 
 if __name__ == "__main__":
     unittest.main()

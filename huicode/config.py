@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -106,6 +108,25 @@ class TeamConfig:
 
 
 @dataclass(frozen=True)
+class AgentGuardConfig:
+    verification_gate: bool = False
+    protect_test_edits: bool = False
+    max_production_files: int = 0
+
+
+@dataclass(frozen=True)
+class OrchestrationConfig:
+    enabled: bool = False
+    prompt_repeat_every: int = 4
+    catalog_repeat_every: int = 4
+    plan_preview_chars: int = 2000
+    exploration_soft_limit: int = 6
+    interface_closure: bool = False
+    scope_audit: bool = False
+    parallel_tool_calls: bool = False
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     protocol: str
     model: str
@@ -113,6 +134,7 @@ class LLMConfig:
     api_key: str
     max_tokens: int = 2048
     temperature: float | None = None
+    reasoning_effort: str | None = None
     thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
@@ -123,6 +145,9 @@ class LLMConfig:
     subagents: SubagentConfig = field(default_factory=SubagentConfig)
     worktrees: WorktreeConfig = field(default_factory=WorktreeConfig)
     teams: TeamConfig = field(default_factory=TeamConfig)
+    agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)
+    orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
+    max_iterations: int = 50
 
 
 class ConfigError(ValueError):
@@ -138,6 +163,15 @@ def load_config(path: str | Path) -> LLMConfig:
     protocol = str(values["protocol"]).strip().lower()
     if protocol not in {"openai", "anthropic"}:
         raise ConfigError("配置字段 protocol 只支持 openai 或 anthropic")
+
+    reasoning_effort = _as_optional_string(values.get("reasoning_effort"), "reasoning_effort")
+    if reasoning_effort is not None:
+        reasoning_effort = reasoning_effort.lower()
+        allowed_efforts = {"none", "low", "medium", "high", "xhigh", "max"}
+        if reasoning_effort not in allowed_efforts:
+            raise ConfigError(
+                "配置字段 reasoning_effort 只支持 none、low、medium、high、xhigh 或 max"
+            )
 
     thinking_raw = values.get("thinking", {})
     if thinking_raw is None:
@@ -191,6 +225,16 @@ def load_config(path: str | Path) -> LLMConfig:
         teams_raw = {}
     if not isinstance(teams_raw, dict):
         raise ConfigError("配置字段 teams 必须是 YAML 映射")
+    agent_guard_raw = values.get("agent_guard", {})
+    if agent_guard_raw is None:
+        agent_guard_raw = {}
+    if not isinstance(agent_guard_raw, dict):
+        raise ConfigError("配置字段 agent_guard 必须是 YAML 映射")
+    orchestration_raw = values.get("orchestration", {})
+    if orchestration_raw is None:
+        orchestration_raw = {}
+    if not isinstance(orchestration_raw, dict):
+        raise ConfigError("配置字段 orchestration 必须是 YAML 映射")
     team_backend = str(teams_raw.get("default_backend", "auto")).strip().lower()
     if team_backend not in {"auto", "terminal", "coroutine"}:
         raise ConfigError("配置字段 teams.default_backend 只支持 auto、terminal 或 coroutine")
@@ -272,7 +316,7 @@ def load_config(path: str | Path) -> LLMConfig:
         protocol=protocol,
         model=str(values["model"]).strip(),
         base_url=str(values["base_url"]).strip().rstrip("/"),
-        api_key=str(values["api_key"]).strip(),
+        api_key=_resolve_secret_reference(values["api_key"], "api_key"),
         headers=_as_string_map(headers_raw, "headers"),
         mcp=mcp_raw,
         hooks=hooks_raw,
@@ -360,6 +404,7 @@ def load_config(path: str | Path) -> LLMConfig:
         ),
         max_tokens=_as_int(values.get("max_tokens", 2048), "max_tokens"),
         temperature=_as_optional_float(values.get("temperature"), "temperature"),
+        reasoning_effort=reasoning_effort,
         show_usage=_as_bool(values.get("show_usage", False), "show_usage"),
         thinking=ThinkingConfig(
             enabled=_as_bool(thinking_raw.get("enabled", False), "thinking.enabled"),
@@ -368,6 +413,52 @@ def load_config(path: str | Path) -> LLMConfig:
         ),
         context=context,
         memory=memory,
+        agent_guard=AgentGuardConfig(
+            verification_gate=_as_bool(
+                agent_guard_raw.get("verification_gate", False),
+                "agent_guard.verification_gate",
+            ),
+            protect_test_edits=_as_bool(
+                agent_guard_raw.get("protect_test_edits", False),
+                "agent_guard.protect_test_edits",
+            ),
+            max_production_files=_as_nonnegative_int(
+                agent_guard_raw.get("max_production_files", 0),
+                "agent_guard.max_production_files",
+            ),
+        ),
+        orchestration=OrchestrationConfig(
+            enabled=_as_bool(orchestration_raw.get("enabled", False), "orchestration.enabled"),
+            prompt_repeat_every=_as_int(
+                orchestration_raw.get("prompt_repeat_every", 4),
+                "orchestration.prompt_repeat_every",
+            ),
+            catalog_repeat_every=_as_int(
+                orchestration_raw.get("catalog_repeat_every", 4),
+                "orchestration.catalog_repeat_every",
+            ),
+            plan_preview_chars=_as_int(
+                orchestration_raw.get("plan_preview_chars", 2000),
+                "orchestration.plan_preview_chars",
+            ),
+            exploration_soft_limit=_as_int(
+                orchestration_raw.get("exploration_soft_limit", 6),
+                "orchestration.exploration_soft_limit",
+            ),
+            interface_closure=_as_bool(
+                orchestration_raw.get("interface_closure", False),
+                "orchestration.interface_closure",
+            ),
+            scope_audit=_as_bool(
+                orchestration_raw.get("scope_audit", False),
+                "orchestration.scope_audit",
+            ),
+            parallel_tool_calls=_as_bool(
+                orchestration_raw.get("parallel_tool_calls", False),
+                "orchestration.parallel_tool_calls",
+            ),
+        ),
+        max_iterations=_as_int(values.get("max_iterations", 50), "max_iterations"),
     )
 
 
@@ -515,6 +606,16 @@ def _as_int(value: Any, field_name: str) -> int:
     return parsed
 
 
+def _as_nonnegative_int(value: Any, field_name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"配置字段 {field_name} 必须是整数") from exc
+    if parsed < 0:
+        raise ConfigError(f"配置字段 {field_name} 不能小于 0")
+    return parsed
+
+
 def _as_optional_float(value: Any, field_name: str) -> float | None:
     if value is None:
         return None
@@ -534,6 +635,21 @@ def _as_optional_string(value: Any, field_name: str) -> str | None:
     if value is None:
         return None
     return _as_non_empty_string(value, field_name)
+
+
+_SECRET_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _resolve_secret_reference(value: Any, field_name: str) -> str:
+    text = _as_non_empty_string(value, field_name)
+    match = _SECRET_REFERENCE.fullmatch(text)
+    if match is None:
+        return text
+    variable = match.group(1)
+    resolved = os.environ.get(variable, "").strip()
+    if not resolved:
+        raise ConfigError(f"配置字段 {field_name} 引用的环境变量未设置: {variable}")
+    return resolved
 
 
 def _as_relative_path_string(value: Any, field_name: str) -> str:

@@ -1,10 +1,11 @@
 import tempfile
 import unittest
+import tempfile
 from pathlib import Path
 
 from huicode.agent import run_agent_loop
 from huicode.agent_events import AgentOptions, AgentState
-from huicode.config import LLMConfig
+from huicode.config import AgentGuardConfig, LLMConfig
 from huicode.permissions import PermissionContext
 from huicode.providers.base import ConversationMessage, StreamEvent, ToolCall
 from huicode.tools.base import ToolContext
@@ -45,6 +46,193 @@ class FakeMCPSession:
 
 
 class AgentLoopTests(unittest.TestCase):
+    def test_scope_guard_denies_new_production_file_after_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            for index in range(2):
+                path = workspace / f"module{index}.py"
+                path.write_text("value = 1\n", encoding="utf-8")
+            provider = ScriptedProvider(
+                [
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall(
+                                "edit-1",
+                                "Edit",
+                                {"path": "module0.py", "old_text": "value = 1", "new_text": "value = 2"},
+                            ),
+                        )
+                    ],
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall(
+                                "edit-2",
+                                "Edit",
+                                {"path": "module1.py", "old_text": "value = 1", "new_text": "value = 2"},
+                            ),
+                        )
+                    ],
+                    [StreamEvent(kind="text", text="完成")],
+                ]
+            )
+            state = AgentState()
+            events = list(
+                run_agent_loop(
+                    provider=provider,
+                    registry=create_default_registry(workspace),
+                    context=ToolContext(workspace=workspace),
+                    state=state,
+                    user_text="修改文件",
+                    config=LLMConfig(
+                        "openai",
+                        "fake",
+                        "https://example.test",
+                        "key",
+                        agent_guard=AgentGuardConfig(max_production_files=1),
+                    ),
+                    options=AgentOptions(max_iterations=4),
+                )
+            )
+
+            self.assertEqual(events[-1].stop_reason, "final")
+            self.assertTrue((workspace / "module0.py").read_text(encoding="utf-8").endswith("2\n"))
+            self.assertEqual((workspace / "module1.py").read_text(encoding="utf-8"), "value = 1\n")
+            denied = next(
+                message.tool_result
+                for message in state.messages
+                if message.tool_result is not None and message.tool_result.error is not None
+            )
+            self.assertEqual(denied.error.code, "production_scope_limit")
+
+    def test_runtime_verification_gate_rejects_non_verification_tool_after_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            source = workspace / "module.py"
+            source.write_text("value = 1\n", encoding="utf-8")
+            provider = ScriptedProvider(
+                [
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall(
+                                "edit",
+                                "Edit",
+                                {"path": "module.py", "old_text": "value = 1", "new_text": "value = 2"},
+                            ),
+                        )
+                    ],
+                    [StreamEvent(kind="tool_call", tool_call=ToolCall("read", "Read", {"path": "module.py"}))],
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall(
+                                "check",
+                                "Bash",
+                                {"command": 'python -c "import sys; print(\'ok\')"'},
+                            ),
+                        )
+                    ],
+                    [StreamEvent(kind="text", text="已验证")],
+                ]
+            )
+            state = AgentState()
+
+            events = list(
+                run_agent_loop(
+                    provider=provider,
+                    registry=create_default_registry(workspace),
+                    context=ToolContext(workspace=workspace),
+                    state=state,
+                    user_text="修复模块",
+                    config=LLMConfig(
+                        "openai",
+                        "fake",
+                        "https://example.test",
+                        "key",
+                        agent_guard=AgentGuardConfig(verification_gate=True, protect_test_edits=True),
+                    ),
+                        options=AgentOptions(max_iterations=8),
+                )
+            )
+
+        self.assertEqual(events[-1].stop_reason, "final")
+        denied = state.messages[4].tool_result
+        self.assertFalse(denied.ok)
+        self.assertEqual(denied.error.code, "verification_required")
+        self.assertEqual(state.verification_attempts, 1)
+        self.assertFalse(state.pending_verification)
+
+    def test_runtime_verification_gate_requires_successful_check_before_final(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            source = workspace / "src" / "module.py"
+            source.parent.mkdir()
+            source.write_text("value = 1\n", encoding="utf-8")
+            provider = ScriptedProvider(
+                [
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall(
+                                "edit",
+                                "Edit",
+                                {"path": "src/module.py", "old_text": "value = 1", "new_text": "value = 2"},
+                            ),
+                        )
+                    ],
+                    [StreamEvent(kind="text", text="修复完成")],
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall(
+                                "failed-check",
+                                "Bash",
+                                {"command": 'python -c "import sys; sys.exit(1)"'},
+                            ),
+                        )
+                    ],
+                    [
+                        StreamEvent(
+                            kind="tool_call",
+                            tool_call=ToolCall(
+                                "passed-check",
+                                "Bash",
+                                {"command": 'python -c "import sys; print(\'ok\')"'},
+                            ),
+                        )
+                    ],
+                    [StreamEvent(kind="text", text="修复完成并已验证")],
+                ]
+            )
+            state = AgentState()
+
+            events = list(
+                run_agent_loop(
+                    provider=provider,
+                    registry=create_default_registry(workspace),
+                    context=ToolContext(workspace=workspace),
+                    state=state,
+                    user_text="修复模块",
+                    config=LLMConfig(
+                        "openai",
+                        "fake",
+                        "https://example.test",
+                        "key",
+                        agent_guard=AgentGuardConfig(verification_gate=True, protect_test_edits=True),
+                    ),
+                    options=AgentOptions(max_iterations=8),
+                )
+            )
+
+        self.assertEqual(events[-1].stop_reason, "final")
+        self.assertFalse(state.pending_verification)
+        self.assertEqual(state.verification_attempts, 2)
+        self.assertEqual(len(provider.calls), 5)
+        self.assertIn("verification_gate", provider.calls[1]["prompt"].module_names())
+        self.assertIn("运行时验证闸门暂未满足", provider.calls[2]["messages"][-1].content)
+
     def test_text_events_stream_and_history_is_saved(self) -> None:
         provider = ScriptedProvider(
             [[StreamEvent(kind="thinking", text="思考"), StreamEvent(kind="thinking", thinking_signature="sig-1"), StreamEvent(kind="text", text="你好")]]
@@ -210,7 +398,8 @@ class AgentLoopTests(unittest.TestCase):
         tool_names = {tool.name for tool in provider.calls[0]["tools"]}
         self.assertEqual(tool_names, {"Read", "Find", "Search"})
         read_tool = next(tool for tool in provider.calls[0]["tools"] if tool.name == "Read")
-        self.assertIn("不要编造工具结果", read_tool.description)
+        self.assertIn("读取文件真实内容", read_tool.description)
+        self.assertNotIn("通用规则", read_tool.description)
 
     def test_empty_response_retries_once_and_answers(self) -> None:
         provider = ScriptedProvider(
@@ -236,7 +425,8 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual([event.kind for event in events], ["progress", "usage", "progress", "text", "done"])
         self.assertEqual(events[-1].stop_reason, "final")
         self.assertEqual(provider.calls[1]["messages"][-1].role, "user")
-        self.assertIn("没有返回任何可显示内容", provider.calls[1]["messages"][-1].content)
+        self.assertIn("没有返回文本或工具调用", provider.calls[1]["messages"][-1].content)
+        self.assertIn("继续调用工具", provider.calls[1]["messages"][-1].content)
 
     def test_repeated_empty_response_stops_with_error(self) -> None:
         provider = ScriptedProvider(

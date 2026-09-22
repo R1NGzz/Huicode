@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from huicode.agent_guard import edit_match_details, is_test_path
+
 from .base import ToolContext, ToolResult, safe_join_workspace
 
 
@@ -70,6 +72,12 @@ class WriteFileTool:
         try:
             path_arg = _require_str(args, "path")
             content = _require_text(args, "content")
+            if context.protect_test_edits and is_test_path(path_arg):
+                return ToolResult.failure(
+                    "test_file_edit_denied",
+                    "评测闸门禁止修改测试文件；测试文件只能读取和运行",
+                    {"path": path_arg, "allowed_actions": ["Read", "Bash"]},
+                )
             path = safe_join_workspace(context.workspace, path_arg)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
@@ -102,6 +110,12 @@ class EditFileTool:
             path_arg = _require_str(args, "path")
             old_text = _require_str(args, "old_text")
             new_text = _require_text(args, "new_text")
+            if context.protect_test_edits and is_test_path(path_arg):
+                return ToolResult.failure(
+                    "test_file_edit_denied",
+                    "评测闸门禁止修改测试文件；测试文件只能读取和运行",
+                    {"path": path_arg, "allowed_actions": ["Read", "Bash"]},
+                )
             path = safe_join_workspace(context.workspace, path_arg)
             if not path.is_file():
                 return ToolResult.failure("not_found", f"文件不存在: {path_arg}", {"path": path_arg})
@@ -117,7 +131,11 @@ class EditFileTool:
                 return ToolResult.failure(
                     "multiple_matches",
                     f"原文在文件中匹配 {count} 次，未修改文件",
-                    {"path": path_arg, "matches": count},
+                    {
+                        "path": path_arg,
+                        "matches": count,
+                        "locations": edit_match_details(content, old_text),
+                    },
                 )
             updated = content.replace(old_text, new_text, 1)
             path.write_text(updated, encoding="utf-8")

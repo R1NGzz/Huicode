@@ -4,12 +4,6 @@ from dataclasses import replace
 
 from huicode.providers.base import ToolSpec
 
-
-COMMON_RULES = (
-    "通用规则：优先使用最贴合任务的专用工具；不要编造工具结果；"
-    "所有路径都必须尊重 workspace 边界。"
-)
-
 TOOL_RULES = {
     "Read": "读取文件真实内容；分析或编辑文件前优先调用它确认现状。",
     "Write": (
@@ -33,9 +27,6 @@ def enhance_tool_specs(specs: list[ToolSpec]) -> list[ToolSpec]:
     enhanced: list[ToolSpec] = []
     for spec in specs:
         extra = TOOL_RULES.get(spec.name, "")
-        if extra:
-            description = f"{spec.description}\n\n{COMMON_RULES}\n{extra}"
-        else:
-            description = f"{spec.description}\n\n{COMMON_RULES}"
+        description = f"{spec.description}\n\n{extra}" if extra else spec.description
         enhanced.append(replace(spec, description=description))
     return enhanced

@@ -95,6 +95,11 @@ class PromptModuleTests(unittest.TestCase):
         self.assertIn("一到两句话总结", output_text)
         self.assertIn("简单问题直接回答", output_text)
 
+    def test_stable_prompt_does_not_repeat_context_management_rule(self) -> None:
+        text = render_stable_modules(fixed_prompt_modules())
+        self.assertEqual(text.count("不要生成或猜测 URL"), 1)
+        self.assertEqual(text.count("不要叙述内部权衡"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

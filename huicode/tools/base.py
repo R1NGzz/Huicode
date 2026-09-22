@@ -18,6 +18,7 @@ class ToolContext:
     max_output_chars: int = 6000
     permissions: "PermissionContext | None" = None
     read_cache: "FileReadCache | None" = None
+    protect_test_edits: bool = False
 
 
 class FileReadCache:

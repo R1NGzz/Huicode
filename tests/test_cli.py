@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -112,6 +113,31 @@ class CLITests(unittest.TestCase):
         self.assertEqual(provider.calls[1][0].content, "你好")
         self.assertEqual(provider.calls[1][1].content, "第1次回复")
         self.assertEqual(provider.calls[1][2].content, "还记得上一句吗")
+
+    def test_noninteractive_prompt_is_one_request_and_streams_json(self) -> None:
+        provider = FakeProvider()
+        config = LLMConfig(
+            protocol="openai",
+            model="fake-model",
+            base_url="https://example.test/v1",
+            api_key="secret-api-key",
+        )
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = _run_chat(
+                provider,
+                config,
+                initial_prompt="第一行\n第二行",
+                output_format="stream-json",
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(provider.calls[0][0].content, "第一行\n第二行")
+        records = [json.loads(line) for line in output.getvalue().splitlines() if line.strip()]
+        self.assertEqual([record["kind"] for record in records], ["progress", "text", "done"])
+        self.assertEqual(records[-1]["stop_reason"], "final")
 
     def test_tool_line_is_printed(self) -> None:
         class ToolProvider(FakeProvider):
