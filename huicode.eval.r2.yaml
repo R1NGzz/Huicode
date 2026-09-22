@@ -1,0 +1,39 @@
+protocol: openai
+model: gpt-5.6-sol
+base_url: http://localhost:8080/v1
+api_key: ${HUICODE_API_KEY}
+max_tokens: 16384
+reasoning_effort: high
+show_usage: true
+max_iterations: 80
+
+agent_guard:
+  verification_gate: false
+  protect_test_edits: true
+
+orchestration:
+  enabled: true
+  prompt_repeat_every: 8
+  catalog_repeat_every: 8
+  plan_preview_chars: 1200
+  exploration_soft_limit: 6
+  interface_closure: true
+  parallel_tool_calls: true
+
+context:
+  enabled: true
+  window_tokens: 128000
+  auto_margin_tokens: 13000
+  manual_margin_tokens: 3000
+  recent_keep_tokens: 10000
+  min_recent_messages: 5
+  single_tool_result_tokens: 1000
+  tool_result_group_tokens: 6000
+
+subagents:
+  foreground_timeout_seconds: 45
+  max_background_tasks: 1
+  shutdown_wait_seconds: 5
+
+teams:
+  enabled: false
