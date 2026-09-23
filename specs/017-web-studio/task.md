@@ -133,6 +133,12 @@
 
 ## T6: 实现工作区、项目和路径解析
 
+**进度（2026-09-23）：** 路径解析器、工作区/项目 domain 与四个接口已落地。`tests/server/test_workspace_resolver.py` **14 项** + `tests/server/test_projects_api.py` **17 项**通过，全仓 **525 项**通过（9 项需真库的集成测试默认跳过）；另在真实 PostgreSQL 上重跑了 4 项接口级用例：项目生命周期、路径穿越被拒且审计保留、链接逃逸被拒、跨工作区隔离。
+
+实际交付比 Files 多两处：`huicode/server/domain/errors.py`（领域错误与稳定错误码，让 domain 不必依赖 FastAPI）、`huicode/server/domain/audit.py`（审计写入——T6 的验收要求"非法路径记录审计事件"，需要它）。`auth/dependencies.py` 增加 `require_project_role`（项目的路径里没有 workspace_id，需从项目反查工作区）与 `get_resolver`。
+
+三点值得留意：**resolver 目前只被项目创建接口调用，尚未接进任何文件读写**，那是 T10/T12 的事，所以现在验证的是"解析器本身正确"而非"文件操作安全"；**链接逃逸只在 Windows 上用 junction 验过**，POSIX 符号链接未测，建不出链接时测试会 skip 并说明原因；**工作区成员管理接口尚未规划**（plan.md 的 API contracts 里也没有），当前只能列出成员，不能增删或改角色。见 [学习记录](../../docs/web-studio-learning/T06-workspace-projects.md)。
+
 **Files:** `huicode/server/domain/projects.py`, `huicode/server/runtime/workspace_resolver.py`, `huicode/server/api/workspaces.py`, `huicode/server/api/projects.py`
 
 **Dependencies:** T4, T5

@@ -15,18 +15,16 @@ PostgreSQL 的差异不是细节：SQLite 不保存 tzinfo（T5 踩到过）、�
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import unittest
-from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from huicode.server.db.models import Base
+from tests.integration._migrations import apply_on_sync_connection as _apply
 
 TEST_DATABASE_URL = os.environ.get("HUICODE_TEST_DATABASE_URL", "").strip()
-VERSIONS_DIR = Path(__file__).resolve().parents[2] / "migrations" / "versions"
 
 EXPECTED_TABLES = set(Base.metadata.tables) | {"alembic_version"}
 
@@ -43,38 +41,8 @@ EXPECTED_TYPES = {
 }
 
 
-def load_migration_chain():
-    modules = []
-    for path in sorted(VERSIONS_DIR.glob("*.py")):
-        spec = importlib.util.spec_from_file_location(path.stem, path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        if hasattr(module, "revision"):
-            modules.append(module)
-    ordered, pending = [], list(modules)
-    while pending:
-        for module in pending:
-            parent = module.down_revision
-            if parent is None or any(done.revision == parent for done in ordered):
-                ordered.append(module)
-                pending.remove(module)
-                break
-        else:
-            raise AssertionError(f"迁移链断裂：{[m.revision for m in pending]}")
-    return ordered
-
-
-def _apply(sync_connection, direction="upgrade"):
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-
-    context = MigrationContext.configure(sync_connection)
-    chain = load_migration_chain()
-    if direction == "downgrade":
-        chain = list(reversed(chain))
-    for module in chain:
-        module.op = Operations(context)
-        getattr(module, direction)()
+# 迁移链的加载与执行来自 tests/integration/_migrations.py，
+# 与接口级集成测试共用同一份实现，避免两边对"怎么跑迁移"产生分歧。
 
 
 @unittest.skipUnless(TEST_DATABASE_URL, "未设置 HUICODE_TEST_DATABASE_URL，跳过真库集成测试")

@@ -21,7 +21,8 @@ from huicode.server.api.errors import ApiError, forbidden, not_found, unauthenti
 from huicode.server.auth import permissions
 from huicode.server.auth.tokens import TokenError, decode_access_token
 from huicode.server.config import ServerSettings
-from huicode.server.db.models import User, WorkspaceMember
+from huicode.server.db.models import Project, User, WorkspaceMember
+from huicode.server.runtime.workspace_resolver import WorkspacePathResolver
 
 # auto_error=False：缺 Authorization 头时由我们抛 ApiError，
 # 这样错误响应与其它接口同形（带 code 和 request_id），而不是 FastAPI 的默认体。
@@ -81,3 +82,34 @@ def require_workspace_role(minimum: str):
         return member
 
     return dependency
+
+
+def require_project_role(minimum: str):
+    """按项目校验角色。返回 Project，供路由直接使用。
+
+    `/api/projects/{project_id}` 的路径里没有 workspace_id，所以要先从项目反查
+    工作区再校验成员关系。三者——项目不存在、项目不属于当前用户所在的任何工作区、
+    是成员但角色不够——前两种一律 404，只有第三种是 403。若"不是成员"返回 403，
+    就等于提供了一个探测 project_id 是否存在的接口。
+    """
+
+    async def dependency(
+        project_id: UUID,
+        user: User = Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> Project:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise not_found()
+        member = await session.get(WorkspaceMember, (project.workspace_id, user.id))
+        if member is None:
+            raise not_found()
+        if not permissions.has_at_least(member.role, minimum):
+            raise forbidden(f"需要 {minimum} 及以上权限")
+        return project
+
+    return dependency
+
+
+def get_resolver(settings: ServerSettings = Depends(get_settings)) -> WorkspacePathResolver:
+    return WorkspacePathResolver(settings.project_root)

@@ -15,7 +15,10 @@ from starlette.exceptions import HTTPException
 from huicode.server.api.auth import router as auth_router
 from huicode.server.api.errors import ApiError
 from huicode.server.api.health import router
+from huicode.server.api.projects import router as projects_router
+from huicode.server.api.workspaces import router as workspaces_router
 from huicode.server.config import ServerSettings, load_server_settings
+from huicode.server.domain.errors import DomainError
 from huicode.server.health import DependencyHealth
 
 logger = logging.getLogger("huicode.server.requests")
@@ -100,6 +103,17 @@ def create_app(settings: ServerSettings | None = None, *, health_factory=Depende
             },
         )
 
+    @app.exception_handler(DomainError)
+    async def domain_error(request: Request, exc: DomainError):
+        # 领域错误自带稳定 code 与 status_code；message 面向用户，不含内部细节。
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {"code": exc.code, "message": exc.message},
+                "request_id": request.state.request_id,
+            },
+        )
+
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
         return JSONResponse(status_code=exc.status_code, headers=exc.headers, content={
@@ -116,6 +130,8 @@ def create_app(settings: ServerSettings | None = None, *, health_factory=Depende
 
     app.include_router(router)
     app.include_router(auth_router)
+    app.include_router(workspaces_router)
+    app.include_router(projects_router)
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         CORSMiddleware, allow_origins=list(settings.cors_origins),
