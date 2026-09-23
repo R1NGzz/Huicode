@@ -28,6 +28,7 @@ from huicode.server.db.models import Session as SessionModel
 from huicode.server.db.models import SessionEvent
 from huicode.server.events.errors import EventStoreError
 from huicode.server.events.types import RuntimeEvent
+from huicode.server.runtime.scrubbing import get_scrubber
 
 DEFAULT_BATCH = 200
 MAX_BATCH = 1000
@@ -62,7 +63,9 @@ def _to_row(event: RuntimeEvent, *, workspace_id: UUID, sequence: int) -> Sessio
         run_id=event.run_id,
         sequence=sequence,
         event_type=event.type,
-        payload=event.payload,
+        # 落库前脱敏（C56/C57）。放在这里是刻意的：只要还有人用 append 写入，
+        # 就不可能绕过脱敏；如果放在调用方，漏一处就是密钥进库。
+        payload=get_scrubber().scrub_payload(event.payload),
         visibility=event.visibility,
     )
 

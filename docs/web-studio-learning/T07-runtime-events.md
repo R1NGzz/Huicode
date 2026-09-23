@@ -57,16 +57,20 @@ RuntimeEvent(type=..., payload=..., visibility=...)
   `TypeError`——T5 已经踩过一次，不想踩第二次。
 - **`visibility` 值不认识时按 `internal` 处理（fail closed）。**
 
-### 一个刻意保守的取舍：工具参数值不进事件载荷
+### 一个刻意保守的取舍——已于 T11 还清
 
-`tool_call_started` 只带参数**名**（`argument_keys`），不带参数**值**。
+T7 落地时，`tool_call_started` 只带参数**名**（`argument_keys`），不带参数**值**。
+理由是执行顺序：**T8 会先把事件写进数据库，T11 的 SecretScrubber 才落地**，
+中间一段时间数据库里会躺着未经脱敏的载荷。
 
-理由是执行顺序：**T8 会先把事件写进数据库，T11 的 SecretScrubber 才落地**。
-如果现在就把参数值写进去，会有一段时间数据库里躺着未经脱敏的载荷。参数名足够
-支撑时间线展示，参数值等 T11 之后再补。
+**T11 上线后这笔欠账已经还掉**：参数值现在进载荷（`arguments`），脱敏由写入路径
+（`store.append`）负责。超过 4096 字符的参数仍只留键名并标记 `arguments_truncated`，
+正文应当走 Artifact——事件表会被每个订阅者按 sequence 全量扫描，不该塞进去。
 
-代价是时间线暂时看不到工具输入内容（F9 要求"工具输入输出摘要"）。这是一笔
-明确的欠账，记在下面的"后续"里。
+对应的链路验证在 `tests/server/test_scrubber.py` 的
+`test_tool_arguments_are_scrubbed_on_the_way_to_the_database`：把这里的映射器与
+T11 的落库接起来跑。**单独验证任一端都说明不了"这条路径是安全的"**——
+映射器带上参数值只说明"值在"，store 脱敏只说明"store 会脱"。
 
 ## 实施难点与工程问题
 

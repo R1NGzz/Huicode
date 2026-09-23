@@ -158,7 +158,7 @@
 
 计划外补的三个类型：plan.md 的清单只列 14 种，映射时发现 `memory_updated`、`error`（**运行中途**的错误，区别于结束整个 Run 的 `run_failed`）与反序列化哨兵 `unknown` 没有对应物——**plan.md 的事件类型清单需要补这三个**。两条安全默认：未知事件类型强制 `internal` 可见性（生产者自称 `user` 也不认），不认识的 `stop_reason` 一律判 `run_failed` 而非"完成"。
 
-一处刻意保守的取舍：`tool_call_started` 只带参数**名**不带参数**值**。因为 T8 的持久化会先于 T11 的脱敏落地，先不带值可避免数据库里躺一段时间未脱敏内容。代价是时间线暂时看不到工具输入（F9），记为后续欠账。见 [学习记录](../../docs/web-studio-learning/T07-runtime-events.md)。
+一处刻意保守的取舍**已于 T11 还清**：T7 落地时 `tool_call_started` 只带参数**名**不带参数**值**，因为 T8 的持久化会先于 T11 的脱敏落地；T11 上线后参数值进载荷（`arguments`），脱敏由写入路径负责，超过 4096 字符的仍只留键名、正文走 Artifact。见 [学习记录](../../docs/web-studio-learning/T07-runtime-events.md)。
 
 **Files:** `huicode/server/events/types.py`, `huicode/server/events/mapper.py`, `tests/server/test_event_types.py`
 
@@ -222,6 +222,16 @@
 **Verification:** 使用不同权限模式和工具能力运行同一任务；确认拒绝、需要审批和允许三种路径符合现有 CLI 语义。
 
 ## T11: 实现 SecretScrubber
+
+**进度（2026-09-23）：** 规则库与四处接入点已落地，`tests/server/test_scrubber.py` **19 项**通过，全仓 **598 项**通过。
+
+规则只有一份：`huicode/memory/scrub.py` 扩展为统一规则库（连接串密码、Bearer、私钥块、JWT、各供应商 key 形状、敏感环境变量、通用 key:value），服务端与 memory 共用。其上新增 `huicode/server/runtime/scrubber.py`（按**键名**判断的结构化脱敏、按**已知值**的字面替换、异常脱敏）与 `runtime/scrubbing.py`（进程级实例）。接入点四处：事件落库、审计落库、日志过滤器、API 错误响应。
+
+**脱敏放在写入路径里而不是调用方**：漏传一处的后果是密钥进只追加的事件表、删不干净，所以默认值必须"忘了也安全"。
+
+过程中测出两个方向相反的真实问题：规则**重复施加会留下残片**（`api_key=[REDACTED]]`、`Authorization: [REDACTED] [REDACTED]`，根因是规则没对已脱敏结果免疫）；以及**忽略大小写让 `token_count=5` 被误伤**（`(?i)` 下 `[A-Z0-9_]*` 也匹配小写）。误伤边界也要守——`max_tokens`、`PORT` 这类常见配置必须放过，否则日志不可读。另有一个运行时细节：**logger 上的 filter 不随记录向上传播**，必须逐个 logger 装。
+
+**未接入 Artifact 与 Diff**（功能本身还不存在，T18），memory 模块的既有调用点也拿不到"已知值"那一层。见 [学习记录](../../docs/web-studio-learning/T11-secret-scrubbing.md)。
 
 **Files:** `huicode/server/runtime/scrubber.py`, `huicode/memory/scrub.py`, `tests/server/test_scrubber.py`
 

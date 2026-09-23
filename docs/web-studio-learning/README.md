@@ -60,3 +60,4 @@
 | [T6 工作区、项目与路径解析](./T06-workspace-projects.md) | 路径解析 14 项 + 接口 17 项；真库重跑 4 项；全仓 525 项 | resolver 尚未接入文件读写；POSIX 符号链接未测；无成员管理接口 |
 | [T7 统一运行时事件](./T07-runtime-events.md) | 16 种事件类型 + 映射，26 项通过 | 映射器尚未接进 Agent Loop（T16）；工具参数值待 T11 脱敏后再补 |
 | [T8 事件持久化与补偿](./T08-event-persistence.md) | 单测 21 项 + 真库真 Redis 5 项 | 无 SSE 层（T17）；未测过真实 Redis 掉线；轮询间隔是拍的，无留存策略 |
+| [T11 敏感信息脱敏](./T11-secret-scrubbing.md) | 统一规则库 + 四处接入点，19 项通过；已还清 T7 的工具参数欠账 | Artifact / Diff 尚未接入（T18）；规则是启发式，自定义格式的密钥会漏 |

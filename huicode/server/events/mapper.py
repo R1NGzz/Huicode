@@ -7,11 +7,13 @@
 - error / memory / usage / context 把内容放在 `data` 字典里；
 - tool_call / tool_result 把对象放在 `tool_call` / `tool_result` 字段。
 
-**工具参数不原样进事件载荷。** `tool_call_started` 只带参数名
-（`argument_keys`），不带参数值。理由是执行顺序：T8 会先把事件写进数据库，
-T11 的 SecretScrubber 才落地——如果现在就把参数值写进去，会有一段时间数据库里
-躺着未经脱敏的载荷。参数名足够支撑时间线展示，参数值等 T11 之后再补。
-这条取舍写在 docs/web-studio-learning/T07-*.md 里。
+**工具参数值进载荷，但先过一道大小闸门。** T7 落地时这里只带参数名、不带值——
+因为当时持久化会先于脱敏落地，写进去就会有一段时间数据库里躺着未脱敏内容。
+T11 的 SecretScrubber 上线后这笔欠账还掉了：值可以进，脱敏由写入路径负责。
+
+超过 `MAX_ARGUMENT_CHARS` 的参数（例如整份文件内容）只留键名并标记
+`arguments_truncated`。正文应当走 Artifact 存储，不该塞进事件表——
+事件表会被每个订阅者按 sequence 全量扫描。
 
 映射不认识的事件类型不会被静默丢掉：它会变成 `unknown` 类型且可见性为 internal，
 原文保留在载荷里，既不丢失也不外泄。
@@ -19,6 +21,7 @@ T11 的 SecretScrubber 才落地——如果现在就把参数值写进去，会
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -47,6 +50,7 @@ _ERROR_CODE_BY_STOP_REASON: dict[str, str] = {
 MAX_TEXT_DELTA_CHARS = 8192
 MAX_SUMMARY_CHARS = 2048
 MAX_ERROR_CHARS = 1024
+MAX_ARGUMENT_CHARS = 4096
 
 
 def _bounded(value: Any, limit: int) -> str:
@@ -60,10 +64,22 @@ def _tool_call_payload(event: AgentEvent) -> dict[str, Any]:
     call = event.tool_call
     if call is None:
         return {}
-    arguments = getattr(call, "arguments", None) or {}
-    # 只带参数名，不带参数值——见模块顶部说明。
-    keys = sorted(arguments) if isinstance(arguments, dict) else []
-    return {"tool_call_id": call.id, "tool_name": call.name, "argument_keys": keys}
+    arguments = getattr(call, "arguments", None)
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    payload: dict[str, Any] = {"tool_call_id": call.id, "tool_name": call.name}
+    try:
+        serialized = json.dumps(arguments, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        serialized = ""
+    if len(serialized) <= MAX_ARGUMENT_CHARS:
+        payload["arguments"] = arguments
+    else:
+        # 太大：只留键名，正文走 Artifact。见模块顶部说明。
+        payload["argument_keys"] = sorted(arguments)
+        payload["arguments_truncated"] = True
+    return payload
 
 
 def map_agent_event(

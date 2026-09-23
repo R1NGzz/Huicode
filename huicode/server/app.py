@@ -20,6 +20,8 @@ from huicode.server.api.workspaces import router as workspaces_router
 from huicode.server.config import ServerSettings, load_server_settings
 from huicode.server.domain.errors import DomainError
 from huicode.server.health import DependencyHealth
+from huicode.server.runtime.scrubber import SecretScrubber, install_log_scrubbing
+from huicode.server.runtime.scrubbing import configure as configure_scrubber
 
 logger = logging.getLogger("huicode.server.requests")
 
@@ -92,13 +94,20 @@ def create_app(settings: ServerSettings | None = None, *, health_factory=Depende
     app.state.settings = settings
     logger.setLevel(settings.log_level)
 
+    # 脱敏器按配置装一次：事件与审计的写入路径都从进程级取它。
+    # 日志过滤器要**逐个 logger 装**——logger 上的 filter 不随记录向上传播。
+    scrubber = SecretScrubber.from_settings(settings)
+    configure_scrubber(scrubber)
+    for name in ("huicode.server", "huicode.server.requests", "huicode.server.events"):
+        install_log_scrubbing(name, scrubber)
+
     @app.exception_handler(ApiError)
     async def api_error(request: Request, exc: ApiError):
-        # ApiError 的 message 是写给用户的，不含内部细节；异常原文不进响应。
+        # message 是写给用户的；再过一道脱敏，防止调用方把配置值拼进消息（C58）。
         return JSONResponse(
             status_code=exc.status_code, headers=exc.headers,
             content={
-                "error": {"code": exc.code, "message": exc.message},
+                "error": {"code": exc.code, "message": scrubber.scrub_text(exc.message)},
                 "request_id": request.state.request_id,
             },
         )
@@ -109,7 +118,7 @@ def create_app(settings: ServerSettings | None = None, *, health_factory=Depende
         return JSONResponse(
             status_code=exc.status_code,
             content={
-                "error": {"code": exc.code, "message": exc.message},
+                "error": {"code": exc.code, "message": scrubber.scrub_text(exc.message)},
                 "request_id": request.state.request_id,
             },
         )

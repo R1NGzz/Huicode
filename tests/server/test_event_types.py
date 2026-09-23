@@ -187,17 +187,28 @@ class MapperTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.assertIsNone(self.map_one(AgentEvent(kind=kind, text="")))
 
-    def test_tool_arguments_values_are_not_copied_into_the_payload(self):
-        """参数值可能含密钥，而 T11 的脱敏晚于 T8 的持久化 —— 先不带值。"""
-        secret = "sk-live-abcdef123456"
-        call = ToolCall("c1", "Write", {"path": "a.py", "content": secret})
+    def test_tool_arguments_are_included(self):
+        """T11 的脱敏上线后这笔欠账还掉了：参数值进载荷，脱敏由写入路径负责。
+
+        链路验证在 tests/server/test_scrubber.py 的
+        `test_tool_arguments_are_scrubbed_on_the_way_to_the_database`——
+        单独看这条只能说明"值被带上了"，说明不了"落库是安全的"。
+        """
+        call = ToolCall("c1", "Write", {"path": "a.py", "content": "hello"})
         mapped = self.map_one(AgentEvent(kind="tool_call", tool_call=call))
 
         self.assertEqual(mapped.payload["tool_name"], "Write")
         self.assertEqual(mapped.payload["tool_call_id"], "c1")
+        self.assertEqual(mapped.payload["arguments"], {"path": "a.py", "content": "hello"})
+
+    def test_oversized_arguments_fall_back_to_keys_only(self):
+        """整份文件内容不该塞进事件表——订阅者会按 sequence 全量扫描它。"""
+        call = ToolCall("c1", "Write", {"path": "big.py", "content": "x" * 10_000})
+        mapped = self.map_one(AgentEvent(kind="tool_call", tool_call=call))
+
+        self.assertTrue(mapped.payload["arguments_truncated"])
         self.assertEqual(mapped.payload["argument_keys"], ["content", "path"])
-        self.assertNotIn(secret, str(mapped.payload))
-        self.assertNotIn(secret, mapped.to_json())
+        self.assertNotIn("arguments", mapped.payload)
 
     def test_tool_failure_records_the_error_code(self):
         call = ToolCall("c1", "Shell", {"command": "false"})
