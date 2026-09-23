@@ -154,6 +154,12 @@
 
 ## T7: 建立统一 Runtime Event 类型
 
+**进度（2026-09-23）：** 16 种事件类型、序列化与 `AgentEvent` 映射已落地，`tests/server/test_event_types.py` **26 项**通过。
+
+计划外补的三个类型：plan.md 的清单只列 14 种，映射时发现 `memory_updated`、`error`（**运行中途**的错误，区别于结束整个 Run 的 `run_failed`）与反序列化哨兵 `unknown` 没有对应物——**plan.md 的事件类型清单需要补这三个**。两条安全默认：未知事件类型强制 `internal` 可见性（生产者自称 `user` 也不认），不认识的 `stop_reason` 一律判 `run_failed` 而非"完成"。
+
+一处刻意保守的取舍：`tool_call_started` 只带参数**名**不带参数**值**。因为 T8 的持久化会先于 T11 的脱敏落地，先不带值可避免数据库里躺一段时间未脱敏内容。代价是时间线暂时看不到工具输入（F9），记为后续欠账。见 [学习记录](../../docs/web-studio-learning/T07-runtime-events.md)。
+
 **Files:** `huicode/server/events/types.py`, `huicode/server/events/mapper.py`, `tests/server/test_event_types.py`
 
 **Dependencies:** T4
@@ -167,6 +173,12 @@
 **Verification:** 单元测试覆盖所有事件类型的序列化、反序列化和未知事件兼容行为。
 
 ## T8: 实现事件持久化、发布和补偿
+
+**进度（2026-09-23）：** 事件存储、发布与补偿已落地。`tests/server/test_event_store.py` **21 项**（SQLite）与 `tests/integration/test_event_store.py` **5 项**（真实 PostgreSQL + 真实 Redis）通过，全仓 **577 项**通过（14 项集成测试默认跳过，无容器的机器不受影响）。
+
+三条不变量由数据库保证：`sequence` 在事务内锁住父会话行后取 `MAX+1`（唯一约束兜底）、同一 `event_id` 重复写入幂等**且不推进序号**、`workspace_id` 取自父会话行。Redis 只发"去看一眼"的通知而非事件本体，数据库是唯一事实来源；订阅者除收到通知时读库外，还会在 `safety_poll_seconds` 内没有通知时主动确认一次——**这条兜底不能省**，否则"Redis 连着但某条通知丢了"会让订阅者永久卡在原地且看不出原因。
+
+过程中测出一个**影响部署配置**的真实问题：Windows 把 `localhost` 优先解析成 IPv6 的 `::1`，而 Docker 发布的端口只监听 IPv4，表现为**连接超时**（不是拒绝，更难识别）。`.env.example` 与本地开发文档原先都写 `localhost`，照文档配置会让 `/health/ready` 报 Redis 不可用，已改为 `127.0.0.1`。另外并发追加的串行化依赖 `FOR UPDATE`，而 **SQLite 会忽略它**，所以这条只在真库集成测试里成立。见 [学习记录](../../docs/web-studio-learning/T08-event-persistence.md)。
 
 **Files:** `huicode/server/events/store.py`, `huicode/server/events/publisher.py`, `huicode/server/events/subscriber.py`, `tests/integration/test_event_store.py`
 

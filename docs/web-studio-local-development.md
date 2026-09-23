@@ -61,8 +61,8 @@ $env:HUICODE_TEST_DATABASE_URL = 'postgresql+asyncpg://huicode:huicode-dev-passw
 
 ```powershell
 $env:HUICODE_SERVER_ENV = 'development'
-$env:HUICODE_DATABASE_URL = 'postgresql+asyncpg://demo:demo@localhost:5432/huicode'
-$env:HUICODE_REDIS_URL = 'redis://localhost:6379/0'
+$env:HUICODE_DATABASE_URL = 'postgresql+asyncpg://huicode:huicode-dev-password@127.0.0.1:5432/huicode'
+$env:HUICODE_REDIS_URL = 'redis://127.0.0.1:6379/0'
 $env:HUICODE_JWT_SECRET = & .\.venv\Scripts\python.exe -c 'import secrets; print(secrets.token_urlsafe(32))'
 $env:HUICODE_PROJECT_ROOT = (Get-Location).Path
 $env:HUICODE_CORS_ORIGINS = 'http://localhost:5173'
