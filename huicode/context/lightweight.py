@@ -25,8 +25,8 @@ def compact_single_tool_result(
     serialized = json.dumps(result.to_model_dict(), ensure_ascii=False)
     if estimator.estimate_text(serialized) <= config.single_tool_result_tokens:
         return result, None
-    spill = store.spill(call, result, iteration, reason)
-    return _compact_result(result, spill, config.preview_chars), spill
+    spill = store.spill(call, result, iteration, reason, config.preview_chars)
+    return _compact_result(result, spill), spill
 
 
 def compact_tool_groups(
@@ -91,10 +91,9 @@ def compact_tool_groups(
     )
 
 
-def _compact_result(result: ToolResult, spill: SpillRecord, preview_chars: int) -> ToolResult:
+def _compact_result(result: ToolResult, spill: SpillRecord) -> ToolResult:
     compact_data = _compact_tool_data(result.data)
-    preview = spill.preview[:preview_chars]
-    compact_data["preview"] = preview
+    compact_data["preview"] = spill.preview
     compact_data["__spilled__"] = {
         "path": spill.path,
         "chars_freed": max(0, spill.original_chars - spill.compact_chars),

@@ -15,13 +15,20 @@ class ToolResultStore:
         self.workspace = workspace
         self.estimator = estimator or TokenEstimator()
 
-    def spill(self, call: ToolCall, result: ToolResult, iteration: int, reason: str) -> SpillRecord:
+    def spill(
+        self,
+        call: ToolCall,
+        result: ToolResult,
+        iteration: int,
+        reason: str,
+        preview_chars: int,
+    ) -> SpillRecord:
         serialized = json.dumps(result.to_model_dict(), ensure_ascii=False, indent=2)
         relative_path = Path(".huicode") / "tool-results" / f"turn-{iteration:03d}-{_safe_filename(call.id)}.json"
         spill_path = self.workspace / relative_path
         spill_path.parent.mkdir(parents=True, exist_ok=True)
         spill_path.write_text(serialized, encoding="utf-8")
-        preview = _preview_text(serialized)
+        preview = _preview_text(serialized, preview_chars)
         compact_chars = len(preview) + len(relative_path.as_posix())
         return SpillRecord(
             path=relative_path.as_posix(),
@@ -38,7 +45,9 @@ def _safe_filename(value: str) -> str:
     return safe or "tool-result"
 
 
-def _preview_text(text: str, limit: int = 400) -> str:
+def _preview_text(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"

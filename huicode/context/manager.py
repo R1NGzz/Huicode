@@ -6,6 +6,7 @@ from huicode.config import ContextConfig, LLMConfig
 from huicode.context.estimator import TokenEstimate, TokenEstimator
 from huicode.context.history import apply_summary, split_recent_messages
 from huicode.context.lightweight import compact_single_tool_result, compact_tool_groups
+from huicode.context.segments import history_is_protocol_safe
 from huicode.context.state import ContextState
 from huicode.context.store import ToolResultStore
 from huicode.context.summarizer import HistorySummarizer
@@ -225,7 +226,18 @@ class ContextManager:
                 message=summary.error_message,
             )
 
-        _replace_messages_in_place(state.messages, apply_summary(older, recent, summary.summary_text))
+        candidate = apply_summary(older, recent, summary.summary_text)
+        # 兜底：压缩只应该做“替换早期区”，不该产出协议非法的历史。真出现了就整轮放弃，
+        # 保留原历史（不计入摘要失败熔断——这是结构性缺陷，不是模型调用失败）。
+        if not history_is_protocol_safe(candidate):
+            state.context.last_compaction_reason = "protocol_unsafe"
+            return ContextCompressionReport(
+                kind="failure",
+                tokens_before=before,
+                tokens_after=before,
+                message="压缩后的历史不满足工具调用序列要求，已放弃本次压缩",
+            )
+        _replace_messages_in_place(state.messages, candidate)
         after = self.estimator.estimate_messages(state.messages).tokens
         state.context.summary_failure_count = 0
         state.context.summary_fuse_open = False

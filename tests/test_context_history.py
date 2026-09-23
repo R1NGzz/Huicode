@@ -3,7 +3,7 @@ import unittest
 from huicode.config import ContextConfig
 from huicode.context.estimator import TokenEstimator
 from huicode.context.history import apply_summary, split_recent_messages
-from huicode.context.segments import build_history_segments
+from huicode.context.segments import build_history_segments, history_is_protocol_safe
 from huicode.providers.base import ConversationMessage, ToolCall
 from huicode.tools.base import ToolResult
 
@@ -36,6 +36,62 @@ class ContextHistoryTests(unittest.TestCase):
         self.assertGreaterEqual(len(recent), 5)
         self.assertEqual(recent[-1].content, "msg-7")
         self.assertEqual(len(older) + len(recent), 8)
+
+    def test_split_recent_messages_keeps_orphan_tool_message_out_of_recent(self) -> None:
+        estimator = TokenEstimator()
+        config = ContextConfig(recent_keep_tokens=1000, min_recent_messages=5)
+        orphan = ConversationMessage(
+            "tool",
+            "孤立结果",
+            tool_call_id="call_x",
+            tool_name="Read",
+            tool_result=ToolResult.success({"content": "x"}, "ok"),
+        )
+        messages = [orphan, *[ConversationMessage("user", f"msg-{index}") for index in range(6)]]
+
+        older, recent = split_recent_messages(messages, config, estimator)
+
+        self.assertEqual(older, [orphan])
+        self.assertNotEqual(recent[0].role, "tool")
+        self.assertTrue(history_is_protocol_safe(apply_summary(older, recent, "## 当前任务\n继续实现")))
+
+    def test_history_is_protocol_safe_accepts_matched_tool_pairs(self) -> None:
+        messages = [
+            ConversationMessage("user", "查项目"),
+            ConversationMessage("assistant", "", tool_calls=[ToolCall("call_1", "Read", {"path": "a.txt"})]),
+            ConversationMessage(
+                "tool",
+                "ok",
+                tool_call_id="call_1",
+                tool_name="Read",
+                tool_result=ToolResult.success({"content": "a"}, "ok"),
+            ),
+            ConversationMessage("assistant", "结论"),
+        ]
+
+        self.assertTrue(history_is_protocol_safe(messages))
+
+    def test_history_is_protocol_safe_rejects_orphan_and_mismatched_results(self) -> None:
+        orphan = ConversationMessage(
+            "tool",
+            "孤立结果",
+            tool_call_id="call_1",
+            tool_name="Read",
+            tool_result=ToolResult.success({"content": "a"}, "ok"),
+        )
+        mismatched = [
+            ConversationMessage("assistant", "", tool_calls=[ToolCall("call_1", "Read", {"path": "a.txt"})]),
+            ConversationMessage(
+                "tool",
+                "ok",
+                tool_call_id="call_2",
+                tool_name="Read",
+                tool_result=ToolResult.success({"content": "a"}, "ok"),
+            ),
+        ]
+
+        self.assertFalse(history_is_protocol_safe([orphan, ConversationMessage("user", "hi")]))
+        self.assertFalse(history_is_protocol_safe(mismatched))
 
     def test_apply_summary_inserts_boundary_message(self) -> None:
         recent = [ConversationMessage("user", "最近消息"), ConversationMessage("assistant", "最近回复")]

@@ -24,6 +24,11 @@ def split_recent_messages(
         if recent_messages >= config.min_recent_messages and recent_tokens >= config.recent_keep_tokens:
             break
     recent_segments.reverse()
+    # 孤立的工具结果（前面没有 assistant 调用）不能作为保留区的第一条：摘要和边界消息
+    # 会插到它前面，生成 [摘要, 边界, tool_result, ...] 这种协议非法的序列。把它退回早期区，
+    # 随摘要一起被压缩掉。
+    while recent_segments and recent_segments[0].messages[0].role == "tool":
+        recent_segments.pop(0)
     recent = [message for segment in recent_segments for message in segment.messages]
     older_count = len(messages) - len(recent)
     older = messages[:older_count]

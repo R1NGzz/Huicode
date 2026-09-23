@@ -29,6 +29,22 @@ class ContextLightweightTests(unittest.TestCase):
             self.assertIn("preview", compacted.data)
             self.assertIn("content", (workspace / spill.path).read_text(encoding="utf-8"))
 
+    def test_preview_uses_configured_length(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            estimator = TokenEstimator()
+            store = ToolResultStore(workspace, estimator)
+            config = ContextConfig(single_tool_result_tokens=20, preview_chars=800)
+            call = ToolCall("call_1", "Read", {"path": "big.txt"})
+            result = ToolResult.success({"content": "x" * 4000}, "ok")
+
+            compacted, spill = compact_single_tool_result(call, result, store, config, estimator, iteration=1)
+
+            self.assertIsNotNone(spill)
+            assert spill is not None
+            self.assertEqual(len(spill.preview), 800)
+            self.assertEqual(compacted.data["preview"], spill.preview)
+
     def test_spilled_find_result_keeps_matches_preview(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
