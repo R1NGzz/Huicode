@@ -195,7 +195,17 @@
 
 ## T9: 增加 Runtime 取消和资源预算
 
-**Files:** `huicode/server/runtime/cancellation.py`, `huicode/server/runtime/limits.py`, `huicode/server/runtime/executor.py`, `tests/server/test_runtime_limits.py`
+**进度（2026-09-28）：** 取消令牌、预算账本与 Run 执行外壳已落地，`tests/server/test_runtime_limits.py` **47 项**通过，全仓 **645 项**通过；真库真 Redis 集成测试 **14 项**无回归。
+
+目标的重点不是"限制得多严"，而是 **Run 一定有终态**：一个永远停在运行中的 Run 会让前端一直转圈、租约永不释放。
+
+三个决定值得留意：**取消用令牌往下传而不是 `asyncio.Task.cancel()`**——Agent 的多数工作是同步阻塞的（工具 `run()`、`subprocess.run`），中间没有 await 点，Task.cancel() 传不进去；**传播是单向的**，Run 取消必然停掉它的工具，单个工具超时不会干掉整个 Run；**工具超时只在事前拦、事后只记录**——工具跑完时副作用已经发生，抛异常只是丢掉结果、撤不回副作用，真正的截断是 T12 的事。另外**超时与用户取消是两个错误码**，两者在运维上含义相反。
+
+过程中测出两个真实问题：**已取消的父令牌派生出的工作仍然会被调度起来**（子令牌是取消状态，但 `ensure_future` 还是会跑它到第一个检查点，"取消"与"没开始"之间有一段空窗）；以及**自己强杀的工作者被误判成外部取消抛了出去**（强杀也会让 `task.cancelled()` 为真，需要额外的标记区分）。
+
+**检查点本身已完成，把它们插进 `huicode/agent.py` 的调用点是 T16**（`huicode/agent.py` 在 T16 的 Files 里）。`max_child_processes` 未实现——先加一个没人执行的配置项比不加更糟，欠账记给 T12。见 [学习记录](../../docs/web-studio-learning/T09-cancellation-and-budget.md)。
+
+**Files:** `huicode/server/runtime/cancellation.py`, `huicode/server/runtime/limits.py`, `huicode/server/runtime/executor.py`, `huicode/server/runtime/errors.py`, `tests/server/test_runtime_limits.py`
 
 **Dependencies:** T7
 

@@ -1,6 +1,8 @@
 # Web Studio 开发环境
 
-当前进度：T1–T5 已完成（配置边界、API 骨架、数据库基础设施、核心数据模型与迁移、认证与工作区角色），全仓 495 项测试通过。Worker 尚未实现，当前就绪探测只覆盖 PostgreSQL 与 Redis，不代表完整任务执行系统就绪。真实 PostgreSQL 与 Redis 的在线验证已具备条件，见下面「依赖容器」与「集成测试」两节。
+当前进度：M1 已完成 10/12（T1–T8、T9、T11；剩 T10、T12）——配置边界、API 骨架、数据库基础设施、数据模型与迁移、认证与工作区角色、工作区与项目路径解析、统一运行时事件与持久化、取消与资源预算、敏感信息脱敏。全仓 **645 项**单元测试通过，真实 PostgreSQL + Redis 集成测试 **14 项**通过。
+
+**这不代表任务执行系统就绪。** Agent Loop 尚未接入服务端运行时（T16），工具权限桥接（T10）与受控执行后端（T12）都还没做；当前就绪探测只覆盖 PostgreSQL 与 Redis。真实依赖的在线验证见下面「依赖容器」与「集成测试」两节。
 
 ## 安装
 
@@ -49,9 +51,15 @@ docker rm -f huicode-pg-dev huicode-redis-dev
 `pytest tests` 不会因此失败。设置环境变量后启用：
 
 ```powershell
-$env:HUICODE_TEST_DATABASE_URL = 'postgresql+asyncpg://huicode:huicode-dev-password@localhost:5432/huicode'
+$env:HUICODE_TEST_DATABASE_URL = 'postgresql+asyncpg://huicode:huicode-dev-password@127.0.0.1:5432/huicode'
+$env:HUICODE_TEST_REDIS_URL = 'redis://127.0.0.1:6379/0'
 .\.venv\Scripts\python.exe -m pytest tests/integration -v
 ```
+
+**用 `127.0.0.1`，不要用 `localhost`。** Windows 把 `localhost` 先解析成 IPv6 `::1`，
+而 Docker 默认只发布 IPv4 端口，于是每次连接都要等 IPv6 失败再回退——**症状是慢，
+不是报错**，所以很容易被当成"测试本来就慢"。实测同一套用例：`localhost` 用 111 秒，
+`127.0.0.1` 用 15 秒。
 
 这些用例会**清空并重建 public schema**（先降级到 base），不要指向任何有数据的库。
 

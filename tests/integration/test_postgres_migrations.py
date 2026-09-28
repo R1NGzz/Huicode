@@ -7,8 +7,11 @@ PostgreSQL 的差异不是细节：SQLite 不保存 tzinfo（T5 踩到过）、�
 
 默认跳过。启用：
 
-    $env:HUICODE_TEST_DATABASE_URL="postgresql+asyncpg://huicode:huicode-dev-password@localhost:5432/huicode"
+    $env:HUICODE_TEST_DATABASE_URL="postgresql+asyncpg://huicode:huicode-dev-password@127.0.0.1:5432/huicode"
     .\\.venv\\Scripts\\python.exe -m pytest tests/integration -v
+
+主机名写 `127.0.0.1` 而不是 `localhost`：Windows 下后者先走 IPv6，Docker 只发布
+IPv4，表现为每个连接先等一次失败回退。实测同一套用例 111 秒 vs 15 秒。
 
 启动数据库的容器命令见 docs/web-studio-local-development.md。
 """
