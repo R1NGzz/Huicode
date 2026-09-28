@@ -35,6 +35,7 @@ from huicode.server.runtime.limits import (
     ResourceBudget,
     truncate_bytes,
 )
+from huicode.server.runtime.permission_bridge import PermissionSnapshot
 
 
 def _budget(**overrides) -> ResourceBudget:
@@ -478,16 +479,30 @@ class ResultContractTests(unittest.TestCase):
         self.assertNotIn(RUN_ERROR, LIMIT_ERROR_CODES)
         self.assertNotIn(RUN_CANCELLED, LIMIT_ERROR_CODES)
 
-    def test_request_carries_its_own_budget_and_workspace(self):
-        """预算与工作目录来自服务端，不从请求参数读（C49）。"""
+    def test_request_carries_its_own_budget_workspace_and_permissions(self):
+        """预算、工作目录与权限快照都来自服务端，不从请求参数读（C49/C54）。"""
         request = AgentRunRequest(
             session_id=uuid4(),
             workspace=Path("C:/tmp/demo"),
             user_text="hello",
             budget=_budget(),
+            permission_snapshot=PermissionSnapshot(
+                workspace=Path("C:/tmp/demo"), allowed_tool_names=frozenset({"Read"})
+            ),
         )
         self.assertEqual(request.budget.max_iterations, 50)
         self.assertEqual(request.workspace, Path("C:/tmp/demo"))
+        self.assertEqual(request.permission_snapshot.allowed_tool_names, frozenset({"Read"}))
+
+    def test_a_run_cannot_be_constructed_without_a_permission_snapshot(self):
+        """让它可选会留出一条"忘了传就当没有权限限制"的路径，而那正是 C54 要挡的。"""
+        with self.assertRaises(TypeError):
+            AgentRunRequest(
+                session_id=uuid4(),
+                workspace=Path("C:/tmp/demo"),
+                user_text="hello",
+                budget=_budget(),
+            )
 
 
 if __name__ == "__main__":

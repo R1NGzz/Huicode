@@ -219,6 +219,18 @@
 
 ## T10: 实现工具能力和权限桥接
 
+**进度（2026-09-28）：** 能力声明与权限桥接已落地，`tests/integration/test_permission_bridge.py` **41 项**通过，全仓 **687 项**通过。
+
+做的是**适配而不是重写**：危险命令黑名单、路径沙箱、内部状态保护、规则匹配、三种权限模式，CLI 已经有了（`permissions/engine.py`），服务端把它译成那套引擎能吃的输入，在它前面补两道检查（工具必须在允许集合内、Plan Mode 只放行只读工具），在它后面把结论译成事件。重写一份的后果是两边语义慢慢分叉。
+
+三个决定：**能力从"有没有副作用"这个布尔量拆成五项声明，未声明按高风险处理**——"没写就按只读放行"会让新工具在没人注意时拿到写权限，两种默认值代价不对称；Bash 声明成"什么都能干"是准确而非保守（只读命令的低风险处理在引擎里按**命令内容**判断，那是"这次调用做了什么"，不是"这个工具能做什么"）。**服务端没有同步确认器**，引擎说"需要确认"时翻译成一次审批请求事件，Run 停在等待审批，不占线程等人。**权限状态由服务端构造**，调用方传进来的 `ToolContext` 里的 `permissions` 一律被快照覆盖——只要存在一条从请求参数到权限判断的路径，C54 就不成立；配套把 `AgentRunRequest.permission_snapshot` 改成必填。
+
+拒绝事件**只带安全分类，不转发引擎的原始原因**（命中规则时它是规则原文，即用户的权限配置，而事件对工作区所有成员可见），有一条用例断言载荷里的 message 必须能在分类表里查到。
+
+测出一个方向错误：能力词表的常量第一版放在服务端，于是 `huicode/tools/` 开始依赖 `huicode/server/`——工具是 CLI 与 Web 共用的，服务端不是它的上游，已挪到 `tools/base.py` 并由服务端反向 import。另有一个**测试期望写错**的例子：把"系统工具不受 Plan Mode 限制"写成了"结果是 allow"，实际它仍要走常规判断因而需要审批——**"这道闸没拦"不等于"整个流程通过"**。
+
+**这项能力也没接进 Agent Loop**，接线是 T16。**C53（网络策略）没有归属任务**，需要补进 plan.md。见 [学习记录](../../docs/web-studio-learning/T10-permission-bridge.md)。
+
 **Files:** `huicode/server/runtime/permission_bridge.py`, `huicode/server/runtime/capabilities.py`, `huicode/tools/base.py`, `tests/integration/test_permission_bridge.py`
 
 **Dependencies:** T6, T9

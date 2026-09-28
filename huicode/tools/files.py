@@ -4,7 +4,7 @@ from typing import Any
 
 from huicode.agent_guard import edit_match_details, is_test_path
 
-from .base import ToolContext, ToolResult, safe_join_workspace
+from .base import FILE_WRITE, READ, ToolContext, ToolResult, safe_join_workspace
 
 
 def _require_str(args: dict[str, Any], key: str) -> str:
@@ -25,6 +25,7 @@ class ReadFileTool:
     name = "Read"
     description = "读取当前工作目录内的 UTF-8 文本文件。"
     side_effect = False
+    capabilities = frozenset({READ})
     parameters = {
         "type": "object",
         "properties": {"path": {"type": "string", "description": "要读取的相对文件路径"}},
@@ -59,6 +60,7 @@ class WriteFileTool:
     name = "Write"
     description = "在当前工作目录内写入 UTF-8 文本文件，会创建父目录。"
     side_effect = True
+    capabilities = frozenset({FILE_WRITE})
     parameters = {
         "type": "object",
         "properties": {
@@ -95,6 +97,7 @@ class EditFileTool:
     name = "Edit"
     description = "在当前工作目录内按原文唯一匹配替换文本。"
     side_effect = True
+    capabilities = frozenset({FILE_WRITE})
     parameters = {
         "type": "object",
         "properties": {

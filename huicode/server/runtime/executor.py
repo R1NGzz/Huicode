@@ -40,6 +40,7 @@ from huicode.server.runtime.scrubbing import get_scrubber
 
 if TYPE_CHECKING:  # 只为类型标注，避免运行时把事件层拖进来
     from huicode.server.events.types import RuntimeEvent
+    from huicode.server.runtime.permission_bridge import PermissionSnapshot
 
 RunStatus = Literal["completed", "cancelled", "failed"]
 
@@ -59,13 +60,19 @@ TERMINAL_EVENT_TYPE: dict[str, str] = {
 
 @dataclass(frozen=True)
 class AgentRunRequest:
-    """一次 Run 的输入。**预算与工作目录都在这里**，不从请求参数里读——
-    C49 要求安全策略不能只依赖前端传入的参数。"""
+    """一次 Run 的输入。预算、工作目录与权限快照都在这里，**都不从请求参数读**——
+    C49/C54 要求安全策略不能依赖前端传入的参数。
+
+    `permission_snapshot` 是**必填**的。让它可选会留出一条"忘了传就当没有权限限制"
+    的路径，而这正是 C54 要挡的东西；必填的话，漏传是启动就报错，不是运行到一半
+    才发现某个工具没被检查。
+    """
 
     session_id: UUID
     workspace: Path
     user_text: str
     budget: ResourceBudget
+    permission_snapshot: "PermissionSnapshot"
     run_id: UUID | None = None
 
 

@@ -7,7 +7,15 @@ import re
 import subprocess
 from typing import Any
 
-from .base import ToolContext, ToolResult
+from .base import (
+    EXTERNAL_SIDE_EFFECT,
+    FILE_WRITE,
+    NETWORK,
+    READ,
+    SHELL,
+    ToolContext,
+    ToolResult,
+)
 
 
 class RunCommandTool:
@@ -17,6 +25,10 @@ class RunCommandTool:
         "当前环境是 Windows 时，优先使用 dir、tree、where、findstr 等命令。"
     )
     side_effect = True
+    # 声明成"什么都能干"是**准确**的，不是保守：一条任意命令既可以读、可以写文件、
+    # 可以出网、也可以调用外部副作用。少声明会让信任声明的策略低估它。
+    # 只读命令的低风险处理在 permissions/engine.py 里按**命令内容**判断，不靠这里。
+    capabilities = frozenset({READ, FILE_WRITE, SHELL, NETWORK, EXTERNAL_SIDE_EFFECT})
     parameters = {
         "type": "object",
         "properties": {

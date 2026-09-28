@@ -90,11 +90,34 @@ class ToolResult:
         }
 
 
+# ── 工具能力词表（checklist C49）─────────────────────────────────────────
+# 放在这里而不是服务端的策略模块里，是因为**工具要声明它，而工具不能反向依赖
+# 服务端**。风险推断与放行判断属于策略，在 server/runtime/capabilities.py。
+#
+# 只有布尔 `side_effect` 是不够的：它回答不了"写文件"和"出网"的区别，而这两者在
+# 策略上完全不同（一个在工作区内，一个出了这台机器）。
+READ = "read"
+FILE_WRITE = "file_write"
+SHELL = "shell"
+NETWORK = "network"
+EXTERNAL_SIDE_EFFECT = "external_side_effect"
+
+ALL_CAPABILITIES: frozenset[str] = frozenset({
+    READ, FILE_WRITE, SHELL, NETWORK, EXTERNAL_SIDE_EFFECT,
+})
+
+#: Plan Mode 下允许的能力集合：只有"只能读"的工具能过。
+READ_ONLY_CAPABILITIES: frozenset[str] = frozenset({READ})
+
+
 class Tool(Protocol):
     name: str
     description: str
     parameters: dict[str, Any]
     side_effect: bool
+    #: 能力声明。**缺失时按高风险处理**——"没写就按只读放行"会让一个新工具在
+    #: 没人注意的情况下拿到写权限，两种默认值的代价不对称。
+    capabilities: frozenset[str]
 
     def run(self, args: dict[str, Any], context: ToolContext) -> ToolResult:
         ...

@@ -4,7 +4,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
-from .base import ToolContext, ToolResult, safe_join_workspace
+from .base import READ, ToolContext, ToolResult, safe_join_workspace
 
 
 def _is_probably_text(path: Path) -> bool:
@@ -29,6 +29,7 @@ class FindFilesTool:
     name = "Find"
     description = "按文件名或相对路径模式查找当前工作目录内的文件。需要列目录、找文件或 glob 时优先使用本工具，不要先调用 Bash。"
     side_effect = False
+    capabilities = frozenset({READ})
     parameters = {
         "type": "object",
         "properties": {
@@ -69,6 +70,7 @@ class SearchCodeTool:
     name = "Search"
     description = "在当前工作目录内按文本模式搜索代码内容，返回文件、行号和片段。需要 grep、findstr、查引用或搜索文本时优先使用本工具，不要先调用 Bash。"
     side_effect = False
+    capabilities = frozenset({READ})
     parameters = {
         "type": "object",
         "properties": {

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from huicode.tools.base import ToolContext, ToolResult
+from huicode.tools.base import EXTERNAL_SIDE_EFFECT, NETWORK, ToolContext, ToolResult
 
 from .jsonrpc import JSONRPCError, MCPError, MCPProtocolError, MCPTransportError
 from .session import MCPClientSession
@@ -28,6 +28,9 @@ class MCPToolAdapter:
     parameters: dict[str, Any]
     session: MCPClientSession
     side_effect: bool = True
+    #: MCP 工具在**另一个进程**里执行，调用要出网，而且我们看不到它做了什么。
+    #: 按最大能力声明：声明不足会让信任声明的策略低估它。
+    capabilities: frozenset[str] = frozenset({NETWORK, EXTERNAL_SIDE_EFFECT})
 
     @classmethod
     def from_metadata(

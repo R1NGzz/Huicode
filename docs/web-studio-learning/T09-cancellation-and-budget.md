@@ -146,7 +146,8 @@ $env:PYTHONIOENCODING="utf-8"
 .\.venv\Scripts\python.exe -m pytest tests/server/test_runtime_limits.py -q
 ```
 
-- 预计与实际：**47 passed**。
+- 预计与实际：**47 passed**（T10 时该文件增至 48 项：`AgentRunRequest` 的
+  `permission_snapshot` 变成必填之后补的一条用例，加在 `ResultContractTests` 里）。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests -q
