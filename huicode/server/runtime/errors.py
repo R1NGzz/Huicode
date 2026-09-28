@@ -20,13 +20,28 @@ from __future__ import annotations
 
 from typing import Any
 
+# Shell 执行边界的码**定义在执行机制所在的模块**（huicode/tools/execution.py），
+# 这里只做聚合。抄一份常量会让同一套词汇表出现两处，改一处就分叉——T10 的能力词表
+# 已经踩过一次同样的坑。
+from huicode.tools.execution import (
+    SHELL_ENV_REJECTED,
+    SHELL_OUTPUT_EXCEEDED,
+    SHELL_SPAWN_FAILED,
+    SHELL_TIMEOUT,
+)
+
 # ── 取消 ────────────────────────────────────────────────────────────────
 RUN_CANCELLED = "run_cancelled"
 
 # ── 超时 ────────────────────────────────────────────────────────────────
+# SHELL_TIMEOUT 在下面从执行模块导入：它是**执行边界**的码，与 Run 级的时限分属
+# 两个层次（Run 超时会把整个 Run 结束掉，Shell 超时只让这一次调用失败）。
 RUN_TIMEOUT = "run_timeout"
 TOOL_TIMEOUT = "tool_timeout"
-SHELL_TIMEOUT = "shell_timeout"
+
+#: 工作目录越出项目根目录。这个码只在服务端出现——CLI 的 cwd 就是工作区根目录，
+#: 没有"解析"这一步，所以它不属于执行机制。
+SHELL_PATH_VIOLATION = "shell_path_violation"
 
 # ── 预算耗尽 ────────────────────────────────────────────────────────────
 ITERATION_BUDGET_EXCEEDED = "iteration_budget_exceeded"
@@ -43,6 +58,10 @@ ALL_ERROR_CODES: frozenset[str] = frozenset({
     RUN_TIMEOUT,
     TOOL_TIMEOUT,
     SHELL_TIMEOUT,
+    SHELL_OUTPUT_EXCEEDED,
+    SHELL_SPAWN_FAILED,
+    SHELL_PATH_VIOLATION,
+    SHELL_ENV_REJECTED,
     ITERATION_BUDGET_EXCEEDED,
     TOOL_CALL_BUDGET_EXCEEDED,
     OUTPUT_BUDGET_EXCEEDED,
@@ -55,9 +74,17 @@ LIMIT_ERROR_CODES: frozenset[str] = frozenset({
     RUN_TIMEOUT,
     TOOL_TIMEOUT,
     SHELL_TIMEOUT,
+    SHELL_OUTPUT_EXCEEDED,
     ITERATION_BUDGET_EXCEEDED,
     TOOL_CALL_BUDGET_EXCEEDED,
     OUTPUT_BUDGET_EXCEEDED,
+})
+
+#: 安全策略拒绝的码。它们不是"限制"也不是"故障"，是**有人试图做不该做的事**，
+#: 运维上要单独看（可能是攻击，也可能是提示词需要调整）。
+POLICY_ERROR_CODES: frozenset[str] = frozenset({
+    SHELL_PATH_VIOLATION,
+    SHELL_ENV_REJECTED,
 })
 
 

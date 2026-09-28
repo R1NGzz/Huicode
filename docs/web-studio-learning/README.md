@@ -51,6 +51,7 @@
 
 | 记录 | 状态 | 证据 |
 | --- | --- | --- |
+| [M1 阶段复盘](./M1-review.md) | **M1 完成（12/12）** | 端到端数据流、7 个真实坑、明确不做项、可说/不可说清单 |
 | 学习记录机制 | 已建立 | 本文及记录模板；尚无实现记录 |
 | [T1 服务端配置](./T01-server-configuration.md) | 依赖安装及新旧配置回归通过 | 正确包源索引、验证证据与自测问题 |
 | [T2 API 生命周期](./T02-api-lifecycle.md) | 配置/API 31 项、CLI 13 项通过；真实离线 HTTP 场景通过 | 真实数据库在线及 Worker 待后续验证 |
@@ -62,4 +63,5 @@
 | [T8 事件持久化与补偿](./T08-event-persistence.md) | 单测 21 项 + 真库真 Redis 5 项 | 无 SSE 层（T17）；未测过真实 Redis 掉线；轮询间隔是拍的，无留存策略 |
 | [T9 取消与资源预算](./T09-cancellation-and-budget.md) | 取消令牌 + 六项预算 + 47 项通过；全仓 645 项 | 检查点未接进 Agent Loop（T16）；`max_child_processes` 留给 T12；强杀不保证副作用回滚（T15） |
 | [T10 工具能力与权限桥接](./T10-permission-bridge.md) | 五项能力声明 + 权限桥接，41 项通过（含 CLI 一致性对照）；全仓 687 项 | 未接进 Agent Loop（T16）；审批等待是 T14；C53 网络策略无归属；skills/subagents/teams 工具未声明能力 |
+| [T12 受控执行边界](./T12-execution-backend.md) | 进程树终止 + 环境白名单 + 预算收口，37 项真实进程测试；全仓 724 项 | `max_child_processes` 明确不做（需 cgroup/Job Object）；POSIX 分支未跑过；取消链路待 T16 |
 | [T11 敏感信息脱敏](./T11-secret-scrubbing.md) | 统一规则库 + 四处接入点，19 项通过；已还清 T7 的工具参数欠账 | Artifact / Diff 尚未接入（T18）；规则是启发式，自定义格式的密钥会漏 |

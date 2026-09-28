@@ -4,7 +4,7 @@ import codecs
 import locale
 import os
 import re
-import subprocess
+import uuid
 from typing import Any
 
 from .base import (
@@ -16,6 +16,31 @@ from .base import (
     ToolContext,
     ToolResult,
 )
+from .execution import (
+    SHELL_ENV_REJECTED,
+    SHELL_OUTPUT_EXCEEDED,
+    SHELL_SPAWN_FAILED,
+    CommandRequest,
+    CommandRunner,
+)
+
+#: 执行层的字节上限至少给这么多，否则一个把 max_output_chars 设得很小的上下文
+#: 会因为输出护栏太紧而频繁杀进程。
+_MIN_OUTPUT_BYTES = 64 * 1024
+
+#: 后端错误码 → 工具错误码。工具错误码是**模型看到的词汇表**，与 CLI 既有行为
+#: 保持一致；后端错误码是运行时与事件流用的。刻意不合并：合并之后，改一个给运维
+#: 看的码就会改变模型看到的东西。
+_ERROR_CODE_MAP = {
+    SHELL_ENV_REJECTED: "invalid_request",
+    SHELL_OUTPUT_EXCEEDED: "output_limit_exceeded",
+    SHELL_SPAWN_FAILED: "exec_error",
+}
+
+#: 进程级执行器。**共用一个是刻意的**：它持有"正在跑的进程"表，共用意味着按
+#: execution_id 取消能覆盖到工具发起的命令（服务端也用它）。用完即从表里移除，
+#: 不会随会话增长。
+_RUNNER = CommandRunner()
 
 
 class RunCommandTool:
@@ -50,32 +75,27 @@ class RunCommandTool:
             return ToolResult.failure("invalid_request", "参数 timeout_seconds 必须是整数")
 
         command, line_limit = _prepare_command(command)
-        try:
-            completed = subprocess.run(
-                command,
+
+        # 真正执行的是受控的本地后端（T12）：工作目录经 WorkspacePathResolver、
+        # 环境变量按白名单过滤、超时后终止**整棵进程树**。这里只负责把结果翻译回
+        # 模型认识的形状——工具的错误码是给模型看的词汇表，后端的错误码是给运行时
+        # 与事件流看的，两者刻意不混用（见 execution_backend.py 的模块文档）。
+        result = _RUNNER.run(
+            CommandRequest(
+                execution_id=uuid.uuid4().hex,
+                command=command,
                 cwd=context.workspace,
-                shell=True,
-                capture_output=True,
-                timeout=timeout,
+                timeout_seconds=timeout,
+                # 执行层的字节上限是**内存护栏**（输出到上限就杀进程）；呈现层的字符
+                # 截断在下面，那才是可读性。两个都要有，作用不同。
+                max_output_bytes=max(context.max_output_chars * 4, _MIN_OUTPUT_BYTES),
             )
-            stdout = _limit_lines(_decode_output(completed.stdout), line_limit)
-            stdout = _truncate(stdout, context.max_output_chars)
-            stderr = _truncate(_decode_output(completed.stderr), context.max_output_chars)
-            ok = completed.returncode == 0
-            data = {
-                "command": command,
-                "returncode": completed.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "timed_out": False,
-            }
-            summary = f"exit {completed.returncode}, stdout {len(stdout)} chars, stderr {len(stderr)} chars"
-            if ok:
-                return ToolResult.success(data, summary)
-            return ToolResult.failure("nonzero_exit", f"命令退出码为 {completed.returncode}", data, summary)
-        except subprocess.TimeoutExpired as exc:
-            stdout = _truncate(_decode_output(exc.stdout), context.max_output_chars)
-            stderr = _truncate(_decode_output(exc.stderr), context.max_output_chars)
+        )
+        stdout = _limit_lines(result.stdout, line_limit)
+        stdout = _truncate(stdout, context.max_output_chars)
+        stderr = _truncate(result.stderr, context.max_output_chars)
+
+        if result.timed_out:
             return ToolResult.failure(
                 "timeout",
                 f"命令执行超过 {timeout} 秒",
@@ -88,8 +108,26 @@ class RunCommandTool:
                 },
                 f"timeout after {timeout}s",
             )
-        except OSError as exc:
-            return ToolResult.failure("exec_error", f"执行命令失败: {exc}", {"command": command})
+        if result.error_code is not None:
+            return ToolResult.failure(
+                _ERROR_CODE_MAP.get(result.error_code, "exec_error"),
+                stderr or "命令未能执行",
+                {"command": command, "error_code": result.error_code, "timed_out": False},
+                f"{result.error_code}: {stderr}"[:240],
+            )
+
+        ok = result.returncode == 0
+        data = {
+            "command": command,
+            "returncode": result.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "timed_out": False,
+        }
+        summary = f"exit {result.returncode}, stdout {len(stdout)} chars, stderr {len(stderr)} chars"
+        if ok:
+            return ToolResult.success(data, summary)
+        return ToolResult.failure("nonzero_exit", f"命令退出码为 {result.returncode}", data, summary)
 
 
 def _decode_output(value: str | bytes | None) -> str:

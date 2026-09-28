@@ -86,6 +86,33 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
 # 结构化脱敏（例如 `{"password": {...}}`）需要按键判断，而不是按值的长相判断。
 SENSITIVE_KEY_RE = re.compile(r"(?i)^" + _KEY_TOKEN + r"$")
 
+# 判断**环境变量名**是否敏感。刻意比 SENSITIVE_KEY_RE 宽，因为它们解决的问题不同：
+#
+# - SENSITIVE_KEY_RE 用在任意文本里，误判的直接后果是**正常内容被抹掉**。所以它
+#   要求敏感词是 `_`/`-` 分段的**最后一段**，`_KEY_NAMES` 里也只收 `api_key`、
+#   `private_key` 这类组合词，不收光秃秃的 `key`——否则 JSON 里随处可见的 `"key"`
+#   会被误脱敏。
+# - 这里判断的是"这个变量能不能进子进程环境"。误判的代价只是**少传一个变量**，
+#   而且调用方会收到明确的错误；漏判的代价是密钥进了子进程，可能被写进日志或
+#   发给外部服务。代价不对称，所以放宽。
+#
+# 放宽的结果是它确实抓到了 SENSITIVE_KEY_RE 抓不到的 `AWS_SECRET_ACCESS_KEY`
+# （末段是 `KEY`，而 SENSITIVE_KEY_RE 不认光秃秃的 `key`）——这是 T12 写环境
+# 过滤时发现的真实缺口，不是假想。
+_SENSITIVE_ENV_SEGMENTS = (
+    r"key|keys|secret|secrets|token|tokens|password|passwd|pwd|credential|credentials|"
+    r"auth|apikey|salt|private|signature|dsn|url|uri|connection"
+)
+SENSITIVE_ENV_NAME_RE = re.compile(
+    r"(?i)(?:^|[_\-])(?:" + _SENSITIVE_ENV_SEGMENTS + r")(?:$|[_\-])"
+)
+
+#: HuiCode 自己的配置一律不进子进程环境。`HUICODE_DATABASE_URL` 会被上面的分词
+#: 规则抓到（连接串里带着数据库密码），但 `HUICODE_PROJECT_ROOT` 这类名字不含任何
+#: 敏感词。**服务端自己的配置没有一条是子进程需要的**，所以按前缀整段挡掉，
+#: 而不是逐个去论证哪个安全——论证漏一个就是一次泄露。
+RESERVED_ENV_PREFIX = "HUICODE_"
+
 
 def scrub_secrets(text: str) -> str:
     """对文本做脱敏。空值和非字符串原样返回。"""

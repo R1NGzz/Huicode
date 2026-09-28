@@ -172,7 +172,7 @@ class ResourceBudget:
     max_iterations: int
     max_tool_calls: int
     max_output_bytes: int
-    max_child_processes: int
+    # max_child_processes: 见下方「未实现项」
 
 class CancellationToken(Protocol):
     def is_cancelled(self) -> bool: ...
@@ -554,6 +554,22 @@ Huicode/
 - **恢复任务重复副作用**：用 Run lease、tool call idempotency、完成记录和显式 retry policy 共同约束；无法证明安全的任务进入人工处理状态。
 - **本地执行权限过大**：把路径、进程、输出和网络策略集中到 ExecutionBackend；Docker 沙箱作为后续替换实现，不让 API 直接传递宿主机执行参数。
 - **敏感信息泄露**：所有持久化和对外输出经过中央 SecretScrubber，并用包含测试密钥的自动化用例验证。
+
+## 未实现项（M1 收口时对齐，2026-09-28）
+
+**`ResourceBudget.max_child_processes` 明确不做。** 限制子进程数量需要 OS 级设施
+（Linux cgroup v2 的 `pids.max`、Windows Job Object），标准库不提供。没有它们就只能
+轮询枚举进程树，而那既不准（进程在两次采样之间生灭）又很贵（Windows 上要起 PowerShell
+查 CIM，每次几百毫秒）。**能确定做到、也确实需要的是超时后终止整棵进程树**，那才是
+进程边界的实质，已经在 T12 落地并验证。
+
+留一个看起来生效、实际不生效的配置项比不写更糟——它会让配置文件看起来已经限制了
+进程数。所以这里从接口里去掉，而不是留一个空壳。将来若引入 cgroup/Job Object 支持，
+再连同配置项一起加回来。
+
+**C53（网络策略：deny 模式阻止网络访问、allowlist 只允许配置目标）没有归属任务。**
+T10 只做到"声明工具具备 `network` 能力"，没有任何出口管控；T12 的实现范围里也没有它。
+需要在 M2 或 M3 补一个任务，或者明确降级为"已知缺口"。
 
 ## Coverage of Spec Requirements
 

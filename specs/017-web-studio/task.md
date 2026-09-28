@@ -269,7 +269,17 @@
 
 ## T12: 实现受控本地 ExecutionBackend
 
-**Files:** `huicode/server/runtime/execution_backend.py`, `huicode/tools/shell.py`, `tests/integration/test_execution_backend.py`
+**进度（2026-09-28）：** 执行边界已落地，`tests/integration/test_execution_backend.py` **37 项**通过（全部跑真实进程），全仓 **724 项**通过，真库真 Redis 集成 **92 项**通过。
+
+最值得写下来的是**停止的粒度**：`subprocess.run(timeout=...)` 超时后杀掉的是直接子进程，而 `shell=True` 下直接子进程是 `cmd.exe`，真正的命令是它的孙子——只杀 `cmd.exe` 会留下孤儿进程继续写文件，**而调用方以为已经停了**。所以启动时就把子进程放进独立进程组，终止时用 `taskkill /T` / `killpg` 整棵带走。环境变量用**白名单**而不是黑名单（进程环境里几百个变量，靠列敏感名字是必输的仗），而**显式请求**敏感变量要报错而不是静默丢弃——静默丢弃会让命令在一个与调用方认知不同的环境里跑，那种问题比直接失败难查。预算收口取**交集**：调用方要 600 秒、预算给 60 秒就只跑 60 秒，反过来也一样。
+
+**执行机制在 `huicode/tools/execution.py`（核心包），服务端层只加 cwd 解析与预算收口**——Shell 工具 CLI 与 Web 都走，工具不能反向依赖服务端。写 import 那一行时发现并改正，没有测试会红。
+
+测出三个真实问题：**T11 的规则漏了 `AWS_SECRET_ACCESS_KEY`**（文本规则不认光秃秃的 `key`，故新增专用于变量名的更宽规则，未改文本规则）；**进程树用例可能空过**（孙进程从没启动时 `"" == ""` 也算通过，已先断言"它跑过"；去掉 `taskkill /T` 验证过护栏会红）；**测试期望写错 `shell=True` 下"命令不存在"的行为**（那是外壳的退出码，不是我们的启动失败）。
+
+**`max_child_processes` 明确不做**：限制进程数需要 cgroup v2 / Job Object 这类 OS 设施，标准库不提供，轮询枚举既不准又很贵。留一个看起来生效的配置项比不写更糟。**这笔 T9 转来的欠账到此转为"明确不做"，需要与 plan.md 对齐。** 见 [学习记录](../../docs/web-studio-learning/T12-execution-backend.md)。
+
+**Files:** `huicode/tools/execution.py`, `huicode/server/runtime/execution_backend.py`, `huicode/tools/shell.py`, `tests/integration/test_execution_backend.py`
 
 **Dependencies:** T6, T9, T10
 
