@@ -39,6 +39,7 @@ from huicode.permissions import (
     clone_permission_context,
 )
 from huicode.provider_factory import create_provider, create_provider_with_model
+from huicode.providers.demo import DemoProvider
 from huicode.providers.base import Provider
 from huicode.skills.catalog import SkillCatalogBuilder, SkillConfigError
 from huicode.skills.manager import SkillManager, default_skill_roots
@@ -101,13 +102,18 @@ def main(argv: list[str] | None = None) -> int:
         default="text",
         help="输出格式；stream-json 为每个 Agent 事件输出一行 JSON",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="使用离线演示 Provider，保留真实 Agent Loop 和工具执行流程",
+    )
     parser.add_argument("--team-worker", default="", help=argparse.SUPPRESS)
     parser.add_argument("--member-id", default="", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     try:
         config = load_config(args.config)
-        provider = create_provider(config)
+        provider = DemoProvider(Path.cwd()) if args.demo else create_provider(config)
     except (ConfigError, OSError, ValueError) as exc:
         print(f"配置错误: {exc}", file=sys.stderr)
         return 2

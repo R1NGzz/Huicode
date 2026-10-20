@@ -6,6 +6,7 @@ __pycache__/
 huicode.egg-info/
 .huicode/
 .huicode-healthcheck/
+/demo/workspace/
 huicode.yaml
 huicode.eval.yaml
 .huicode-permissions.local.yaml

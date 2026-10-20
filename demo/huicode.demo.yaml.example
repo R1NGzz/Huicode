@@ -1,0 +1,9 @@
+protocol: anthropic
+model: huicode-demo
+base_url: https://demo.invalid/v1
+api_key: demo-only
+max_tokens: 1024
+show_usage: true
+teams:
+  enabled: false
+mcp: {}

@@ -29,6 +29,8 @@ HuiCode 是一个终端 AI 编程助手。当前阶段已经具备交互式对�
 - 定义式/Fork 式子 Agent、进程内后台任务与 Git Worktree 隔离
 - 长期 Agent Team、共享任务、成员邮箱、计划审批与安全分支集成
 
+面试演示材料位于 [demo/](demo/README.md)，执行 `demo/reset-demo.ps1` 和 `demo/start-demo.ps1` 可以启动一个不依赖网络的完整演示流程。
+
 ## 待完善项
 
 当前优先补齐以下能力，避免功能扩展快于可靠性和安全边界：
