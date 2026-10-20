@@ -10,7 +10,7 @@ if (Test-Path -LiteralPath $venvPython) {
     $python = $venvPython
 }
 elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    throw "未找到 Python 3.11+，请先安装 Python。"
+    throw "Python 3.11+ was not found."
 }
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
