@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import sys
 from pathlib import Path
 from typing import Iterator
 
@@ -52,12 +53,15 @@ class DemoProvider:
             if last_tool.tool_name == "Edit":
                 yield from self._call(
                     "Bash",
-                    {"command": "python -m unittest discover -s tests -v"},
+                    {"command": self._test_command()},
                     tool_names,
                 )
                 return
             if last_tool.tool_name == "Bash":
-                yield from self._text("修改已完成，测试通过。这个过程展示了工具调用、结果回灌和 Agent Loop 的自动衔接。")
+                if last_tool.tool_result is not None and not last_tool.tool_result.ok:
+                    yield from self._text("测试命令返回失败。模型拿到了结构化错误，可以继续分析失败原因。")
+                else:
+                    yield from self._text("修改已完成，测试通过。这个过程展示了工具调用、结果回灌和 Agent Loop 的自动衔接。")
                 return
             if last_tool.tool_name == "Read":
                 yield from self._text("这是演示项目的入口文件，包含一个简单的 greet 函数和可运行的单元测试。")
@@ -67,7 +71,7 @@ class DemoProvider:
             yield from self._call("Read", {"path": "src/hello.py"}, tool_names)
             return
         if "测试" in last_user or "test" in last_user.lower():
-            yield from self._call("Bash", {"command": "python -m unittest discover -s tests -v"}, tool_names)
+            yield from self._call("Bash", {"command": self._test_command()}, tool_names)
             return
         if "读取" in last_user or "内容" in last_user or "read" in last_user.lower():
             yield from self._call("Read", {"path": "src/hello.py"}, tool_names)
@@ -90,6 +94,10 @@ class DemoProvider:
     @staticmethod
     def _is_edit_request(value: str) -> bool:
         return any(word in value for word in ("修改", "改一下", "edit", "change"))
+
+    @staticmethod
+    def _test_command() -> str:
+        return f'"{sys.executable}" -m unittest discover -s tests -v'
 
 
 __all__ = ["DemoProvider"]
